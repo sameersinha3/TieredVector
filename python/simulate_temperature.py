@@ -6,6 +6,7 @@ import plyvel
 from google.cloud import storage
 from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
+from datasets import load_dataset
 
 '''
 Initial temperatures based on a query dataset (these will be moved around later)
@@ -13,7 +14,7 @@ Initial temperatures based on a query dataset (these will be moved around later)
 
 doc_embeddings = np.load("wiki_embeddings.npy")
 query_dataset = load_dataset("natural_questions", split="train")
-queries = [entry['question'] for entry in dataset]
+queries = [entry['question'] for entry in query_dataset]
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 query_embeddings = model.encode(queries)
