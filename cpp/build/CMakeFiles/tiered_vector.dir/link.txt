@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/tiered_vector.dir/src/main.cpp.o CMakeFiles/tiered_vector.dir/src/storage_manager.cpp.o CMakeFiles/tiered_vector.dir/src/http_server.cpp.o -o tiered_vector  -lrocksdb -lhiredis
