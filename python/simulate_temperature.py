@@ -1,26 +1,48 @@
+import cohere
 import numpy as np
 import redis
 import pickle
-import plyvel
+import lmdb
+import os
 
-from google.cloud import storage
-from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
-from datasets import load_dataset
+from dotenv import load_dotenv
+
 
 '''
 Initial temperatures based on a query dataset (these will be moved around later)
 '''
+print("START")
+load_dotenv()  # load .env file
+API_KEY = os.getenv("COHERE_API_KEY")
+co = cohere.Client(API_KEY)
 
+queries = [
+    "What is the capital of France?",
+    "Who wrote Harry Potter?",
+    "When was the Declaration of Independence signed?",
+    "What is the tallest mountain in the world?",
+    "How many continents are there?"
+]
 doc_embeddings = np.load("wiki_embeddings.npy")
-query_dataset = load_dataset("natural_questions", split="train")
+'''
+query_dataset = load_dataset("natural_questions", split="train[:10]")
 queries = [entry['question'] for entry in query_dataset]
+print(f"Number of examples in the dataset: {len(query_dataset)}")
+'''
+response = co.embed(
+    model="multilingual-22-12",
+    texts=queries
+)
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
-query_embeddings = model.encode(queries)
+query_embeddings = np.array(response.embeddings)
+
+print("Finished Encoding Queries")
 
 k = 3
 nbrs = NearestNeighbors(n_neighbors=k, metric='cosine').fit(doc_embeddings)
+
+print("Found Nearest Neighbors")
 
 temperature = np.zeros(len(doc_embeddings))
 alpha = 0.9
@@ -30,7 +52,8 @@ for query_topk in indices:
     for idx in query_topk:
         temperature[idx] = alpha * temperature[idx] + 1
 
-# If we change the values here make sure to modify config.go instead
+print("Assigned Temperatures")
+
 tier1_threshold = np.percentile(temperature, 95)
 tier2_threshold = np.percentile(temperature, 75)
 
@@ -47,16 +70,29 @@ tier1_indices = np.where(tier_assignment == 1)[0]
 for idx in tier1_indices:
     r.set(f'vector:{idx}', pickle.dumps(doc_embeddings[idx]))
 
-# Store Tier 2 vectors
-db = plyvel.DB('./rocksdb_data/', create_if_missing=True)
-tier2_indices = np.where(tier_assignment == 2)[0]
-for idx in tier2_indices:
-    db.put(f'vector_{idx}'.encode(), pickle.dumps(doc_embeddings[idx]))
+print("Redis Complete")
 
+# Store Tier 2 vectors in LMDB (key-value store)
+env = lmdb.open('tier2_lmdb', map_size=1_000_000_000)  
+tier2_indices = np.where(tier_assignment == 2)[0]
+with env.begin(write=True) as txn:
+    for idx in tier2_indices:
+        key = f'vector_{idx}'.encode('utf-8')
+        value = pickle.dumps(doc_embeddings[idx])
+        txn.put(key, value)
+env.close()
+
+print("LMDB Complete")
 # Store Tier 3 vectors up to 1000 - want to remain within free tier
-client = storage.Client()
-bucket = client.get_bucket('your-bucket-name') # Need to configure GCS storage
-tier3_indices = np.where(tier_assignment == 3)[0]
-for idx in tier3_indices[:1000]:
-    blob = bucket.blob(f'vector_{idx}')
-    blob.upload_from_string(pickle.dumps(doc_embeddings[idx]))
+# Commented out GCS for now 
+# client = storage.Client()
+# bucket = client.get_bucket('your-bucket-name') 
+# tier3_indices = np.where(tier_assignment == 3)[0]
+# for idx in tier3_indices[:1000]:
+#     blob = bucket.blob(f'vector_{idx}')
+#     blob.upload_from_string(pickle.dumps(doc_embeddings[idx]))
+
+print(f"Stored {len(tier1_indices)} vectors in Redis (Tier 1)")
+print(f"Stored {len(tier2_indices)} vectors in DBM (Tier 2)")
+print(f"Tier 1 threshold: {tier1_threshold:.3f}")
+print(f"Tier 2 threshold: {tier2_threshold:.3f}")
