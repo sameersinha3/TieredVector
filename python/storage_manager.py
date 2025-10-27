@@ -117,6 +117,7 @@ class StorageManager:
             
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
         query_embedding = np.array(query_embedding, dtype=np.float32)
+        retrieved = []
 
         # --- Tier 1: Redis ---
         if self.redis_client:
@@ -129,22 +130,22 @@ class StorageManager:
                     query, query_params=params, sort_by="score", dialect=2
                 )
                 if len(res.docs) > 0:
-                    docs = []
                     for doc in res.docs:
                         sim = 1 - float(doc.score)
                         if sim >= threshold:
-                            docs.append({
+                            retrieved.append({
                                 "id": doc.id,
                                 "score": sim,
                                 "text": getattr(doc, "text", None),
                                 "source": "redis"
                             })
-                    print("[Tier 1: Redis] Found relevant docs")
-                    return docs
+                    if len(retrieved) > k:
+                        return retrieved
             except Exception as e:
                 print(f"[Redis] search error: {e}")
 
         # --- Tier 2: LMDB ---
+        remaining = k = len(docs) # Number of Docs left to find after Redis
         if hasattr(self, "lmdb_env") and self.lmdb_env:
             try:
                 with self.lmdb_env.begin() as txn:
@@ -170,9 +171,14 @@ class StorageManager:
                             for s, d in best[:k]
                         ]
                         print("[Tier 2: LMDB] Found relevant docs")
-                        return docs
+                        remaining -= len(docs)
+                        retrieved.extend(docs)
+                        if retrieved <= 0:
+                            return retrieved
             except Exception as e:
                 print(f"[LMDB] search error: {e}")
+        return retrieved # Early Exit - don't worry about Vertex for now
+        '''
 
         # --- Tier 3: Vertex AI ---
         if hasattr(self, "vertex_client") and self.vertex_client:
@@ -199,6 +205,7 @@ class StorageManager:
         # Nothing found
         print("No relevant docs found in any tier.")
         return None
+    '''
     
 
     def close(self):
