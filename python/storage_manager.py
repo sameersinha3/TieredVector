@@ -2,23 +2,23 @@ import redis
 import pickle
 import numpy as np
 from typing import List, Optional
-import plyvel
+import lmdb
 from google.cloud import storage
 
 
 class StorageManager:
 
-    def __init__(self, redis_host='localhost', redis_port=6379, leveldb_path='./leveldb_data',
+    def __init__(self, redis_host='localhost', redis_port=6379, lmdb_path='./tier2_lmdb',
                  gcs_bucket_name="vectier", project="VectorTier"):
         
         self.redis_host = redis_host
         self.redis_port = redis_port
-        self.leveldb_path = leveldb_path
+        self.lmdb_path = lmdb_path
         self.gcs_bucket_name = gcs_bucket_name
         self.project = project
 
         self.redis_client = None
-        self.leveldb = None
+        self.lmdb = None
         self.gcs_client = None
         self.gcs_bucket_handle = None
 
@@ -35,12 +35,11 @@ class StorageManager:
             return False
             
         try:
-            self.leveldb = plyvel.DB(self.leveldb_path, create_if_missing=True)
-            print("LevelDB opened")
+            self.lmdb_env = lmdb.open(self.lmdb_path, map_size=1_000_000_000)
+            print("LMDB opened")
         except Exception as e:
-            print(f"Failed to open LevelDB: {e}")
-            print("Falling back to file-based storage")
-            self.leveldb = None
+            print(f"Failed to open LMDB: {e}")
+            self.lmdb_env = None
             
         try:
             if self.gcs_bucket_name:
@@ -59,9 +58,9 @@ class StorageManager:
         if temperature >= self.tier1_threshold:
             return 1  # Redis
         elif temperature >= self.tier2_threshold:
-            return 2  # LevelDB
+            return 2
         else:
-            return 3  # GCS (or LevelDB fallback)
+            return 3
             
     def store_document(self, doc_id: int, embedding: np.ndarray, temperature: float) -> bool:
         tier = self.determine_tier(temperature)
@@ -70,7 +69,7 @@ class StorageManager:
             if tier == 1:
                 success = self._store_in_redis(doc_id, embedding)
             elif tier == 2:
-                success = self._store_in_leveldb(doc_id, embedding)
+                success = self._store_in_lmdb(doc_id, embedding)
             else:  # tier == 3
                 success = self._store_in_gcs(doc_id, embedding)
                     
@@ -79,18 +78,6 @@ class StorageManager:
         except Exception as e:
             print(f"Failed to store document {doc_id}: {e}")
             return False
-            
-    def retrieve_document(self, query_embedding, similarity_threshold=0.8, top_k=5) -> Optional[np.ndarray]:
-        results = self._query_redis(query_embedding, top_k)
-        if results and results[0]["similarity"] >= similarity_threshold:
-            return results
-
-        results = self._query_leveldb(query_embedding, top_k)
-        if results and results[0]["similarity"] >= similarity_threshold:
-            return results
-
-        results = self._query_vertex_ai(query_embedding, top_k)
-        return results
         
     def _store_in_redis(self, doc_id: int, embedding: np.ndarray) -> bool:
         try:
@@ -102,18 +89,19 @@ class StorageManager:
             print(f"Redis store error for doc {doc_id}: {e}")
             return False
             
-    def _store_in_leveldb(self, doc_id: int, embedding: np.ndarray) -> bool:
-        if self.leveldb is None:
-            print(f"LevelDB not available, skipping doc {doc_id}")
+    def _store_in_lmdb(self, doc_id: int, embedding: np.ndarray) -> bool:
+        if self.lmdb_env is None:
+            print(f"LMDB not available, skipping doc {doc_id}")
             return False
             
         try:
-            key = f"vector_{doc_id}".encode()
-            value = pickle.dumps(embedding)
-            self.leveldb.put(key, value)
+            with self.lmdb_env.begin(write=True) as txn:
+                key = f"vector_{doc_id}".encode()
+                value = pickle.dumps(embedding)
+                txn.put(key, value)
             return True
         except Exception as e:
-            print(f"LevelDB store error for doc {doc_id}: {e}")
+            print(f"LMDB store error for doc {doc_id}: {e}")
             return False
             
     def _store_in_gcs(self, doc_id: int, embedding: np.ndarray) -> bool:
@@ -127,7 +115,7 @@ class StorageManager:
             print(f"GCS store error for doc {doc_id}: {e}")
             return False
             
-    def _retrieve_doc(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
+    def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
         query_embedding = np.array(query_embedding, dtype=np.float32)
 
         # --- Tier 1: Redis ---
@@ -216,7 +204,7 @@ class StorageManager:
     def close(self):
         if self.redis_client:
             self.redis_client.close()
-        if self.leveldb:
-            self.leveldb.close()
+        if hasattr(self, "lmdb_env") and self.lmdb_env:
+            self.lmdb_env.close()
         print("Storage connections closed")
 
