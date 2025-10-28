@@ -1,26 +1,26 @@
 import redis
 import pickle
 import numpy as np
-from typing import List, Optional
 import lmdb
-from google.cloud import storage
+from google.cloud import aiplatform
 
 
 class StorageManager:
 
     def __init__(self, redis_host='localhost', redis_port=6379, lmdb_path='./tier2_lmdb',
-                 gcs_bucket_name="vectier", project="VectorTier"):
+                 vertex_project='VectorTier', vertex_location='us-central1', vertex_index_endpoint='projects/VectorTier/locations/us-central1/indexEndpoints/3646844773844647936', vertex_index_id='3347874368112820224'):
         
         self.redis_host = redis_host
         self.redis_port = redis_port
         self.lmdb_path = lmdb_path
-        self.gcs_bucket_name = gcs_bucket_name
-        self.project = project
 
         self.redis_client = None
         self.lmdb = None
-        self.gcs_client = None
-        self.gcs_bucket_handle = None
+        self.vertex_project = vertex_project
+        self.vertex_location = vertex_location
+        self.vertex_index_endpoint = vertex_index_endpoint
+        self.vertex_index_id = vertex_index_id
+        self.vertex_client = None
 
         self.tier1_threshold=0.9
         self.tier2_threshold=0.7
@@ -42,14 +42,13 @@ class StorageManager:
             self.lmdb_env = None
             
         try:
-            if self.gcs_bucket_name:
-                self.gcs_client = storage.Client(project=self.project)
-                self.gcs_bucket_handle = self.gcs_client.get_bucket(self.gcs_bucket_name)
-                print(f"GCS bucket '{self.gcs_bucket_name}' initialized")
+            aiplatform.init(project=self.vertex_project, location=self.vertex_location)
+            self.vertex_client = aiplatform.MatchingEngineIndexEndpoint(
+                index_endpoint_name=self.vertex_index_endpoint
+            )
         except Exception as e:
-            print(f"Failed to initialize GCS: {e}")
-            self.gcs_client = None
-            self.gcs_bucket_handle = None
+            print(f"Failed to initialize Vertex: {e}")
+            self.vertex_client = None
             
         return True
         
@@ -106,13 +105,24 @@ class StorageManager:
             
     def _store_in_gcs(self, doc_id: int, embedding: np.ndarray) -> bool:
         try:
-            blob_name = f"vector_{doc_id}"
-            blob = self.gcs_bucket_handle.blob(blob_name)
-            value = pickle.dumps(embedding)
-            blob.upload_from_string(value)
+            if self.vertex_client is None:
+                return False
+
+            vector_list = embedding.astype(np.float32).tolist()
+
+            datapoint = {
+                "doc_id": str(doc_id),
+                "feature_vector": vector_list,
+            }
+            
+            response = self.vertex_client.upsert_datapoints(
+                deployed_index_id=self.vertex_index_id,
+                datapoints=[datapoint]
+            )
+           
             return True
         except Exception as e:
-            print(f"GCS store error for doc {doc_id}: {e}")
+            print(f"Vertex store error for doc {doc_id}: {e}")
             return False
             
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
@@ -136,7 +146,6 @@ class StorageManager:
                             retrieved.append({
                                 "id": doc.id,
                                 "score": sim,
-                                "text": getattr(doc, "text", None),
                                 "source": "redis"
                             })
                     if len(retrieved) > k:
@@ -165,7 +174,6 @@ class StorageManager:
                             {
                                 "id": d["id"],
                                 "score": float(s),
-                                "text": d["text"],
                                 "source": "lmdb"
                             }
                             for s, d in best[:k]
@@ -173,40 +181,45 @@ class StorageManager:
                         print("[Tier 2: LMDB] Found relevant docs")
                         remaining -= len(docs)
                         retrieved.extend(docs)
-                        if retrieved <= 0:
+                        if remaining <= 0:
                             return retrieved
             except Exception as e:
                 print(f"[LMDB] search error: {e}")
-        return retrieved # Early Exit - don't worry about Vertex for now
-        '''
+        
 
         # --- Tier 3: Vertex AI ---
         if hasattr(self, "vertex_client") and self.vertex_client:
             try:
-                index = self.vertex_client.get_index(name=self.vertex_index_name)
+                index = self.vertex_client.get_index(name=self.vertex_index_endpoint)
                 res = index.find_neighbors(
                     queries=[query_embedding.tolist()],
-                    num_neighbors=k
+                    num_neighbors=remaining
                 )
                 if res and len(res[0].neighbors) > 0:
-                    docs = [
-                        {
-                            "id": match.datapoint.datapoint_id,
-                            "score": 1 - match.distance,  # convert distance to similarity
-                            "source": "vertex"
-                        }
-                        for match in res[0].neighbors
-                    ]
-                    print("[Tier 3: Vertex AI] Found relevant docs")
-                    return docs
+                    docs = []
+                    for match in res[0].neighbors:
+                        sim = 1 - match.distance
+                        if sim >= threshold:
+                            docs.append({
+                                "id": match.datapoint.datapoint_id,
+                                "score": sim,
+                                "source": "vertex"
+                            })
+                            remaining -= 1
+                            if remaining == 0:
+                                retrieved.extend(docs)
+                                return retrieved
             except Exception as e:
                 print(f"[Vertex] search error: {e}")
+        
+        if not retrieved:
+            print("No relevant docs found in any tier.")
+            return None
+        else:
+            print(f"Fewer than k matches found below threshold, returning {k-remaining} documents.")
+            return retrieved
+        
 
-        # Nothing found
-        print("No relevant docs found in any tier.")
-        return None
-    '''
-    
 
     def close(self):
         if self.redis_client:

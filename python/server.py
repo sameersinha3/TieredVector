@@ -109,7 +109,6 @@ if __name__ == '__main__':
     print("  POST /store - Store a document")
     print("  POST /retrieve - Retrieve a document") 
     print("  GET /status - Get storage statistics")
-    print("  GET /health - Health check")
     
     # Run server
     app.run(host='0.0.0.0', port=8082, debug=True)
