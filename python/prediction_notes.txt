@@ -1,0 +1,29 @@
+Temperature Prediction Notes - Jay
+==================================
+
+What I've done so far:
+
+1. TemperaturePredictor class
+   - Tracks document access history 
+   - Updates temperature using same alpha=0.9 as simulate_temperature.py
+   - Simple prediction based on access frequency (high access = temp goes up)
+   - Identifies which docs should migrate between tiers
+
+2. MigrationManager class  
+   - Basic framework for moving docs between tiers
+   - Tracks where each document is stored
+   - Placeholder methods for actual tier operations
+   - TODO: Need to integrate with actual Redis/LMDB/GCS
+
+Key decisions:
+- Using simple heuristics instead of ML for now (can upgrade later)
+- Temperature prediction looks at access frequency over past 24 hours
+- Migration triggered when predicted tier != current tier AND temp change > 0.15
+
+Next steps:
+- Hook up to actual storage backends
+- Test with real query workload  
+- Tune the prediction parameters
+- Add more sophisticated prediction if needed
+
+Test with: python test_prediction.py
