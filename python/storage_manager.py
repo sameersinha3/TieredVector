@@ -2,30 +2,46 @@ import redis
 import pickle
 import numpy as np
 import lmdb
-from google.cloud import aiplatform
+import json
+from google.cloud import storage
+from google.oauth2 import service_account
+
+
+'''
+STORAGE MANAGER CLASS MODIFIED TO USE GCS CONFIGURATION
+
+Example Usage in sandbox.py (temporary file)
+
+'''
 
 
 class StorageManager:
 
     def __init__(self, redis_host='localhost', redis_port=6379, lmdb_path='./tier2_lmdb',
-                 vertex_project='VectorTier', vertex_location='us-central1', vertex_index_endpoint='projects/VectorTier/locations/us-central1/indexEndpoints/3646844773844647936', vertex_index_id='3347874368112820224'):
+                 gcs_project='VectorTier', gcs_bucket=None, gcs_blob_name=None, sa_key_path=None):
         
         self.redis_host = redis_host
         self.redis_port = redis_port
         self.lmdb_path = lmdb_path
 
         self.redis_client = None
-        self.lmdb = None
-        self.vertex_project = vertex_project
-        self.vertex_location = vertex_location
-        self.vertex_index_endpoint = vertex_index_endpoint
-        self.vertex_index_id = vertex_index_id
-        self.vertex_client = None
+        self.lmdb_env = None
 
-        self.tier1_threshold=0.9
-        self.tier2_threshold=0.7
+        # GCS setup
+        self.gcs_project = gcs_project
+        self.gcs_bucket_name = gcs_bucket
+        self.gcs_blob_name = gcs_blob_name
+        self.sa_key_path = sa_key_path
+        self.gcs_client = None
+        self.gcs_bucket = None
+        self.gcs_blob = None
+
+        self.tier1_threshold = 0.9
+        self.tier2_threshold = 0.7
+
 
     def initialize(self) -> bool:
+        """Initialize Redis, LMDB, and GCS connections."""
         try:
             self.redis_client = redis.Redis(host=self.redis_host, port=self.redis_port, decode_responses=False)
             self.redis_client.ping()
@@ -42,42 +58,42 @@ class StorageManager:
             self.lmdb_env = None
             
         try:
-            aiplatform.init(project=self.vertex_project, location=self.vertex_location)
-            self.vertex_client = aiplatform.MatchingEngineIndexEndpoint(
-                index_endpoint_name=self.vertex_index_endpoint
-            )
+            creds = service_account.Credentials.from_service_account_file(self.sa_key_path)
+            self.gcs_client = storage.Client(project=self.gcs_project, credentials=creds)
+            self.gcs_bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            self.gcs_blob = self.gcs_bucket.blob(self.gcs_blob_name)
+            print("GCS initialized")
         except Exception as e:
-            print(f"Failed to initialize Vertex: {e}")
-            self.vertex_client = None
-            
+            print(f"Failed to initialize GCS: {e}")
+            self.gcs_client = None
+
         return True
-        
+
+
     def determine_tier(self, temperature: float) -> int:
-        """Determine which tier a document should be stored in based on temperature."""
         if temperature >= self.tier1_threshold:
             return 1  # Redis
         elif temperature >= self.tier2_threshold:
-            return 2
+            return 2  # LMDB
         else:
-            return 3
-            
+            return 3  # GCS
+
+
     def store_document(self, doc_id: int, embedding: np.ndarray, temperature: float) -> bool:
         tier = self.determine_tier(temperature)
         
         try:
             if tier == 1:
-                success = self._store_in_redis(doc_id, embedding)
+                return self._store_in_redis(doc_id, embedding)
             elif tier == 2:
-                success = self._store_in_lmdb(doc_id, embedding)
-            else:  # tier == 3
-                success = self._store_in_gcs(doc_id, embedding)
-                    
-            return success
-            
+                return self._store_in_lmdb(doc_id, embedding)
+            else:
+                return self._store_in_gcs(doc_id, embedding)
         except Exception as e:
             print(f"Failed to store document {doc_id}: {e}")
             return False
-        
+
+
     def _store_in_redis(self, doc_id: int, embedding: np.ndarray) -> bool:
         try:
             key = f"vector:{doc_id}"
@@ -87,12 +103,12 @@ class StorageManager:
         except Exception as e:
             print(f"Redis store error for doc {doc_id}: {e}")
             return False
-            
+
+
     def _store_in_lmdb(self, doc_id: int, embedding: np.ndarray) -> bool:
-        if self.lmdb_env is None:
+        if not self.lmdb_env:
             print(f"LMDB not available, skipping doc {doc_id}")
             return False
-            
         try:
             with self.lmdb_env.begin(write=True) as txn:
                 key = f"vector_{doc_id}".encode()
@@ -102,29 +118,31 @@ class StorageManager:
         except Exception as e:
             print(f"LMDB store error for doc {doc_id}: {e}")
             return False
-            
+
+
     def _store_in_gcs(self, doc_id: int, embedding: np.ndarray) -> bool:
+        if not self.gcs_blob:
+            print("GCS not initialized")
+            return False
         try:
-            if self.vertex_client is None:
-                return False
-
-            vector_list = embedding.astype(np.float32).tolist()
-
             datapoint = {
-                "doc_id": str(doc_id),
-                "feature_vector": vector_list,
+                "datapoint_id": str(doc_id),
+                "feature_vector": embedding.astype(np.float32).tolist(),
             }
-            
-            response = self.vertex_client.upsert_datapoints(
-                deployed_index_id=self.vertex_index_id,
-                datapoints=[datapoint]
-            )
-           
+
+            # Download existing data to append to it
+            data = ""
+            if self.gcs_blob.exists():
+                data = self.gcs_blob.download_as_text()
+
+            new_data = data + json.dumps(datapoint) + "\n"
+            self.gcs_blob.upload_from_string(new_data)
             return True
         except Exception as e:
-            print(f"Vertex store error for doc {doc_id}: {e}")
+            print(f"GCS store error for doc {doc_id}: {e}")
             return False
-            
+
+
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
         query_embedding = np.array(query_embedding, dtype=np.float32)
         retrieved = []
@@ -132,99 +150,72 @@ class StorageManager:
         # --- Tier 1: Redis ---
         if self.redis_client:
             try:
-                query_vector = query_embedding.tobytes()
-                query = f"*=>[KNN {k} @embedding $vector AS score]"
-                params = {"vector": query_vector}
-
-                res = self.redis_client.ft("doc_index").search(
-                    query, query_params=params, sort_by="score", dialect=2
-                )
-                if len(res.docs) > 0:
-                    for doc in res.docs:
-                        sim = 1 - float(doc.score)
-                        if sim >= threshold:
-                            retrieved.append({
-                                "id": doc.id,
-                                "score": sim,
-                                "source": "redis"
-                            })
-                    if len(retrieved) > k:
-                        return retrieved
+                keys = self.redis_client.keys("vector:*")
+                candidates = []
+                for key in keys:
+                    emb = pickle.loads(self.redis_client.get(key))
+                    score = np.dot(query_embedding, emb) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(emb)
+                    )
+                    if score >= threshold:
+                        candidates.append((score, key.decode().split(":")[1]))
+                candidates.sort(reverse=True, key=lambda x: x[0])
+                docs = [{"id": did, "score": s, "source": "redis"} for s, did in candidates[:k]]
+                retrieved.extend(docs)
+                if len(retrieved) >= k:
+                    return retrieved
             except Exception as e:
-                print(f"[Redis] search error: {e}")
+                print(f"[Redis simple search] error: {e}")
+
 
         # --- Tier 2: LMDB ---
-        remaining = k = len(docs) # Number of Docs left to find after Redis
-        if hasattr(self, "lmdb_env") and self.lmdb_env:
+        remaining = k - len(retrieved)
+        if remaining > 0 and self.lmdb_env:
             try:
                 with self.lmdb_env.begin() as txn:
                     cursor = txn.cursor()
                     best = []
                     for key, value in cursor:
-                        data = pickle.loads(value)
-                        emb = np.array(data["embedding"], dtype=np.float32)
+                        emb = pickle.loads(value)
                         score = np.dot(query_embedding, emb) / (
                             np.linalg.norm(query_embedding) * np.linalg.norm(emb)
                         )
                         if score >= threshold:
-                            best.append((score, data))
-                    if best:
-                        best.sort(reverse=True, key=lambda x: x[0])
-                        docs = [
-                            {
-                                "id": d["id"],
-                                "score": float(s),
-                                "source": "lmdb"
-                            }
-                            for s, d in best[:k]
-                        ]
-                        print("[Tier 2: LMDB] Found relevant docs")
-                        remaining -= len(docs)
-                        retrieved.extend(docs)
-                        if remaining <= 0:
-                            return retrieved
+                            best.append((score, key.decode()))
+                    best.sort(reverse=True, key=lambda x: x[0])
+                    docs = [{"id": k, "score": s, "source": "lmdb"} for s, k in best[:remaining]]
+                    retrieved.extend(docs)
+                    if len(retrieved) >= k:
+                        return retrieved
             except Exception as e:
                 print(f"[LMDB] search error: {e}")
-        
 
-        # --- Tier 3: Vertex AI ---
-        if hasattr(self, "vertex_client") and self.vertex_client:
+        # --- Tier 3: GCS ---
+        remaining = k - len(retrieved)
+        if remaining > 0 and self.gcs_blob:
             try:
-                index = self.vertex_client.get_index(name=self.vertex_index_endpoint)
-                res = index.find_neighbors(
-                    queries=[query_embedding.tolist()],
-                    num_neighbors=remaining
-                )
-                if res and len(res[0].neighbors) > 0:
-                    docs = []
-                    for match in res[0].neighbors:
-                        sim = 1 - match.distance
-                        if sim >= threshold:
-                            docs.append({
-                                "id": match.datapoint.datapoint_id,
-                                "score": sim,
-                                "source": "vertex"
-                            })
-                            remaining -= 1
-                            if remaining == 0:
-                                retrieved.extend(docs)
-                                return retrieved
+                data = self.gcs_blob.download_as_text().splitlines()
+                candidates = []
+                for line in data:
+                    entry = json.loads(line)
+                    emb = np.array(entry["feature_vector"], dtype=np.float32)
+                    score = np.dot(query_embedding, emb) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(emb)
+                    )
+                    if score >= threshold:
+                        candidates.append((score, entry["datapoint_id"]))
+                candidates.sort(reverse=True, key=lambda x: x[0])
+                docs = [{"id": did, "score": s, "source": "gcs"} for s, did in candidates[:remaining]]
+                retrieved.extend(docs)
             except Exception as e:
-                print(f"[Vertex] search error: {e}")
-        
-        if not retrieved:
-            print("No relevant docs found in any tier.")
-            return None
-        else:
-            print(f"Fewer than k matches found below threshold, returning {k-remaining} documents.")
-            return retrieved
-        
+                print(f"[GCS] retrieval error: {e}")
+
+        return retrieved if retrieved else None
 
 
     def close(self):
         if self.redis_client:
             self.redis_client.close()
-        if hasattr(self, "lmdb_env") and self.lmdb_env:
+        if self.lmdb_env:
             self.lmdb_env.close()
         print("Storage connections closed")
-
