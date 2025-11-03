@@ -1,12 +1,12 @@
 import lmdb
 import numpy as np
+import json
 import os
 import pickle
 import redis
-import time
 
 from dotenv import load_dotenv
-from google.cloud import aiplatform
+from google.cloud import storage
 from google.oauth2 import service_account
 from sklearn.neighbors import NearestNeighbors
 
@@ -84,37 +84,29 @@ tier3_indices = np.where(tier_assignment == 3)[0]  # array of indices
 embeddings = np.array(doc_embeddings)  # shape (N, d)
 project = "VectorTier"
 location = os.getenv("REGION")
-index_name = os.getenv("INDEX")
+bucket = os.getenv("BUCKET_NAME")
+blob = os.getenv("BLOB")
 
-# Initialize Vertex AI client
+# Initialize GCS Storage
 credentials = service_account.Credentials.from_service_account_file(
     os.getenv("SA_KEY")
 )
-aiplatform.init(credentials=credentials, project=project, location=location)
-index_client = aiplatform.MatchingEngineIndex(index_name=index_name)
+storage_client = storage.Client(credentials=credentials)
+bucket = storage_client.bucket(bucket)
+blob = bucket.blob(blob)
 
-
-# Convert embeddings into datapoint format
-datapoints = []
-for i in tier3_indices:
-    datapoints.append({
-        "datapoint_id": str(i),  # unique ID for retrieval
-        "feature_vector": embeddings[i].astype(np.float32).tolist(),
-    })
-
-# Bulk upsert (Vertex supports batches of datapoints)
-BATCH_SIZE = 1000  # can adjust depending on memory & API limits
-for start in range(0, len(datapoints), BATCH_SIZE):
-    batch = datapoints[start:start + BATCH_SIZE]
-    response = index_client.upsert_datapoints(
-        datapoints=batch,
-    )
-    print(f"Upserted {len(batch)} datapoints to Vertex AI ({start + len(batch)}/{len(datapoints)})")
-
-    if start + BATCH_SIZE < len(datapoints):
-        print("Pausing for 60 seconds to respect quota...")
-        time.sleep(60)
+count = 0
+with blob.open("w") as f:
+    for i in tier3_indices:
+        datapoint = {
+            "datapoint_id": str(i),  # unique ID for retrieval
+            "feature_vector": embeddings[i].astype(np.float32).tolist(),
+        }
+        
+        # Write each datapoint as a new line in the file
+        f.write(json.dumps(datapoint) + "\n")
+        count += 1
 
 print(f"Stored {len(tier1_indices)} vectors in Redis (Tier 1)")
 print(f"Stored {len(tier2_indices)} vectors in LMDB (Tier 2)")
-print(f"Stored {len(tier3_indices)} vectors in VertexAI (Tier 3)")
+print(f"Stored {len(tier3_indices)} vectors in GCS (Tier 3)")

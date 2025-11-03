@@ -1,10 +1,8 @@
 # System Design
 
-## Flask Server
-Documents are stored and retrieved by the flask server in server.py (this can actually just become functions we call rather than an HTTP server since the project is now entirely Python)
-
-/retrieve endpoint works by checking hot tier documents with a given threshold, then only cascading down to mid- and cold- tier if we don't find enough documents.
-
 ## GCS / Vertex
-I am currently working on Vertex vs. a standard GCS bucket. Vertex is likely more expensive but higher performance. Given that it's our cold tier, it might make more sense to use a GCS bucket to minimize cost but I will do more research into this.
+I have decided that GCS is a better fit due to the nature of cold storage - we likely value cost savings in the cold tier more than efficient lookup so we are using normal cloud storage rather than Vertex AI, which enables more efficient lookup but much higher cost. The code is configured to run with a service account I have created (when running simulate_temperature).
 
+## TODO
+
+server.py likely does not need to run on Flask anymore since we have reverted to entirely in Python. It can just be functions for storing and retrieving, with a basic scoring mechanism. We should also have a migration method that retrieves an embedding from Tier X, moves it to Tier Y. This will also require an eviction policy, or an eviction function to kick out the lowest scored document within a tier.
