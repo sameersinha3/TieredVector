@@ -1,56 +1,35 @@
-import cohere
-import numpy as np
-import redis
-import pickle
 import lmdb
+import numpy as np
 import os
+import pickle
+import redis
+import time
 
-from sklearn.neighbors import NearestNeighbors
 from dotenv import load_dotenv
+from google.cloud import aiplatform
+from google.oauth2 import service_account
+from sklearn.neighbors import NearestNeighbors
 
 
 '''
 Initial temperatures based on a query dataset (these will be moved around later)
 '''
-print("START")
-load_dotenv()  # load .env file
-API_KEY = os.getenv("COHERE_API_KEY")
-co = cohere.Client(API_KEY)
+load_dotenv()
+doc_embeddings = np.load("wiki_embeddings.npy")[:10000] # Only use 10k documents for now 
+query_embeddings = np.load("query_embeddings.npy")
 
-queries = [
-    "What is the capital of France?",
-    "Who wrote Harry Potter?",
-    "When was the Declaration of Independence signed?",
-    "What is the tallest mountain in the world?",
-    "How many continents are there?"
-]
-doc_embeddings = np.load("wiki_embeddings.npy")
-'''
-query_dataset = load_dataset("natural_questions", split="train[:10]")
-queries = [entry['question'] for entry in query_dataset]
-print(f"Number of examples in the dataset: {len(query_dataset)}")
-'''
-response = co.embed(
-    model="multilingual-22-12",
-    texts=queries
-)
-
-query_embeddings = np.array(response.embeddings)
-
-print("Finished Encoding Queries")
-
-k = 3
+k = 100
 nbrs = NearestNeighbors(n_neighbors=k, metric='cosine').fit(doc_embeddings)
 
 print("Found Nearest Neighbors")
 
 temperature = np.zeros(len(doc_embeddings))
-alpha = 0.9
 
-_, indices = nbrs.kneighbors(query_embeddings)
-for query_topk in indices:
-    for idx in query_topk:
-        temperature[idx] = alpha * temperature[idx] + 1
+distances, indices = nbrs.kneighbors(query_embeddings)
+for query_dists, query_topk in zip(distances, indices):
+    for rank, (dist, idx) in enumerate(zip(query_dists, query_topk)):
+        temperature[idx] += 1/dist
+
 
 print("Assigned Temperatures")
 
@@ -61,6 +40,23 @@ tier_assignment = np.zeros(len(doc_embeddings), dtype=int)
 tier_assignment[temperature >= tier1_threshold] = 1
 tier_assignment[(temperature < tier1_threshold) & (temperature >= tier2_threshold)] = 2
 tier_assignment[temperature < tier2_threshold] = 3
+
+
+num_tier1 = np.sum(tier_assignment == 1)
+num_tier2 = np.sum(tier_assignment == 2)
+num_tier3 = np.sum(tier_assignment == 3)
+
+print(f"Tier 1 count: {num_tier1}")
+print(f"Tier 2 count: {num_tier2}")
+print(f"Tier 3 count: {num_tier3}")
+
+np.savez(
+    "tier_results.npz",
+    temperature=temperature,
+    tier_assignment=tier_assignment,
+    tier1_threshold=tier1_threshold,
+    tier2_threshold=tier2_threshold
+)
 
 # Connect to local Redis
 r = redis.Redis(host='localhost', port=6379)
@@ -83,16 +79,42 @@ with env.begin(write=True) as txn:
 env.close()
 
 print("LMDB Complete")
-# Store Tier 3 vectors up to 1000 - want to remain within free tier
-# Commented out GCS for now 
-# client = storage.Client()
-# bucket = client.get_bucket('your-bucket-name') 
-# tier3_indices = np.where(tier_assignment == 3)[0]
-# for idx in tier3_indices[:1000]:
-#     blob = bucket.blob(f'vector_{idx}')
-#     blob.upload_from_string(pickle.dumps(doc_embeddings[idx]))
+
+tier3_indices = np.where(tier_assignment == 3)[0]  # array of indices
+embeddings = np.array(doc_embeddings)  # shape (N, d)
+project = "VectorTier"
+location = os.getenv("REGION")
+index_name = os.getenv("INDEX")
+
+# Initialize Vertex AI client
+credentials = service_account.Credentials.from_service_account_file(
+    os.getenv("SA_KEY")
+)
+aiplatform.init(credentials=credentials, project=project, location=location)
+index_client = aiplatform.MatchingEngineIndex(index_name=index_name)
+
+
+# Convert embeddings into datapoint format
+datapoints = []
+for i in tier3_indices:
+    datapoints.append({
+        "datapoint_id": str(i),  # unique ID for retrieval
+        "feature_vector": embeddings[i].astype(np.float32).tolist(),
+    })
+
+# Bulk upsert (Vertex supports batches of datapoints)
+BATCH_SIZE = 1000  # can adjust depending on memory & API limits
+for start in range(0, len(datapoints), BATCH_SIZE):
+    batch = datapoints[start:start + BATCH_SIZE]
+    response = index_client.upsert_datapoints(
+        datapoints=batch,
+    )
+    print(f"Upserted {len(batch)} datapoints to Vertex AI ({start + len(batch)}/{len(datapoints)})")
+
+    if start + BATCH_SIZE < len(datapoints):
+        print("Pausing for 60 seconds to respect quota...")
+        time.sleep(60)
 
 print(f"Stored {len(tier1_indices)} vectors in Redis (Tier 1)")
-print(f"Stored {len(tier2_indices)} vectors in DBM (Tier 2)")
-print(f"Tier 1 threshold: {tier1_threshold:.3f}")
-print(f"Tier 2 threshold: {tier2_threshold:.3f}")
+print(f"Stored {len(tier2_indices)} vectors in LMDB (Tier 2)")
+print(f"Stored {len(tier3_indices)} vectors in VertexAI (Tier 3)")
