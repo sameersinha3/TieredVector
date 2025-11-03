@@ -1,41 +1,17 @@
 import numpy as np
-import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from datetime import datetime, timedelta
-import pickle
 from collections import defaultdict, deque
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
-import redis
-import lmdb
-import json
 
 class TemperaturePredictor:
     """
-    Predicts document temperature changes and manages dynamic tier migration
-    Based on access patterns, temporal patterns, and query similarity
+    Basic temperature predictor for document tier management
     """
     
     def __init__(self, 
-                 redis_host='localhost',
-                 redis_port=6379,
-                 lmdb_path='./tier2_lmdb',
                  history_window_hours=24,
                  prediction_horizon_hours=6,
                  migration_threshold=0.15):
-        """
-        Initialize temperature predictor
-        
-        Args:
-            redis_host: Redis host for Tier 1 storage
-            redis_port: Redis port
-            lmdb_path: Path to LMDB for Tier 2 storage
-            history_window_hours: Hours of history to consider for prediction
-            prediction_horizon_hours: Hours ahead to predict
-            migration_threshold: Temperature change threshold to trigger migration
-        """
-        self.redis_client = redis.Redis(host=redis_host, port=redis_port)
-        self.lmdb_env = lmdb.open(lmdb_path, map_size=1_000_000_000)
         
         # Prediction parameters
         self.history_window = timedelta(hours=history_window_hours)
@@ -46,16 +22,15 @@ class TemperaturePredictor:
         self.access_history = defaultdict(lambda: deque(maxlen=1000))
         self.temperature_history = defaultdict(list)
         
-        # Prediction models per document
-        self.models = {}
-        self.scalers = {}
-        
         # Current temperatures
         self.current_temperatures = {}
         
         # Tier thresholds (matching simulate_temperature.py)
         self.tier1_threshold = 0.95  # percentile
         self.tier2_threshold = 0.75  # percentile
+        
+        # Simple prediction weights
+        self.decay_factor = 0.9  # matches simulate_temperature.py alpha
         
     def log_access(self, doc_id: int, timestamp: datetime, query_embedding: np.ndarray):
         """
@@ -82,100 +57,33 @@ class TemperaturePredictor:
             'temperature': new_temp
         })
         
-    def extract_features(self, doc_id: int, current_time: datetime) -> np.ndarray:
+    def calculate_access_frequency(self, doc_id: int, current_time: datetime) -> float:
         """
-        Extract features for temperature prediction
-        
-        Features:
-        - Access frequency in different time windows (1h, 6h, 24h)
-        - Time since last access
-        - Hour of day (cyclical encoding)
-        - Day of week (cyclical encoding)
-        - Recent temperature trend
-        - Query diversity (std of recent query embeddings)
+        Calculate recent access frequency for a document
         """
-        features = []
-        
-        # Access frequency features
         accesses = self.access_history[doc_id]
-        time_windows = [1, 6, 24]  # hours
+        window_start = current_time - self.history_window
         
-        for window_hours in time_windows:
-            window_start = current_time - timedelta(hours=window_hours)
-            window_accesses = sum(1 for a in accesses 
-                                  if a['timestamp'] >= window_start)
-            features.append(window_accesses / window_hours)  # Normalize by window size
-            
-        # Time since last access
-        if accesses:
-            time_since_last = (current_time - accesses[-1]['timestamp']).total_seconds() / 3600
-        else:
-            time_since_last = 24.0  # Default to 24 hours
-        features.append(time_since_last)
-        
-        # Temporal features (cyclical encoding)
-        hour = current_time.hour
-        features.extend([
-            np.sin(2 * np.pi * hour / 24),
-            np.cos(2 * np.pi * hour / 24)
-        ])
-        
-        day_of_week = current_time.weekday()
-        features.extend([
-            np.sin(2 * np.pi * day_of_week / 7),
-            np.cos(2 * np.pi * day_of_week / 7)
-        ])
-        
-        # Temperature trend
-        temp_history = self.temperature_history[doc_id]
-        if len(temp_history) >= 2:
-            recent_temps = [t['temperature'] for t in temp_history[-10:]]
-            temp_trend = np.polyfit(range(len(recent_temps)), recent_temps, 1)[0]
-        else:
-            temp_trend = 0.0
-        features.append(temp_trend)
-        
-        # Query diversity (standard deviation of recent query embeddings)
-        if len(accesses) >= 2:
-            recent_queries = [a['query_embedding'] for a in list(accesses)[-10:]]
-            query_diversity = np.std(recent_queries)
-        else:
-            query_diversity = 0.0
-        features.append(query_diversity)
-        
-        return np.array(features)
+        recent_accesses = sum(1 for a in accesses if a['timestamp'] >= window_start)
+        return recent_accesses / self.history_window.total_seconds() * 3600  # accesses per hour
     
-    def train_predictor(self, doc_id: int):
+    def estimate_future_temperature(self, doc_id: int, current_time: datetime) -> float:
         """
-        Train or update temperature predictor for a specific document
+        Simple temperature estimation based on recent access patterns
         """
-        temp_history = self.temperature_history[doc_id]
+        current_temp = self.current_temperatures.get(doc_id, 0.0)
         
-        if len(temp_history) < 10:  # Need minimum history
-            return
+        # Get access frequency
+        access_freq = self.calculate_access_frequency(doc_id, current_time)
+        
+        # Simple prediction: if high access frequency, temperature will increase
+        # if low access frequency, temperature will decay
+        if access_freq > 1.0:  # More than 1 access per hour
+            predicted_temp = current_temp * self.decay_factor + access_freq * 0.1
+        else:
+            predicted_temp = current_temp * self.decay_factor
             
-        # Prepare training data
-        X = []
-        y = []
-        
-        for i in range(len(temp_history) - 1):
-            features = self.extract_features(doc_id, temp_history[i]['timestamp'])
-            target_temp = temp_history[i + 1]['temperature']
-            X.append(features)
-            y.append(target_temp)
-            
-        X = np.array(X)
-        y = np.array(y)
-        
-        # Train model
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        model = LinearRegression()
-        model.fit(X_scaled, y)
-        
-        self.models[doc_id] = model
-        self.scalers[doc_id] = scaler
+        return predicted_temp
         
     def predict_temperature(self, doc_id: int, future_time: datetime) -> float:
         """
@@ -188,16 +96,7 @@ class TemperaturePredictor:
         Returns:
             Predicted temperature
         """
-        if doc_id not in self.models:
-            # Return current temperature if no model
-            return self.current_temperatures.get(doc_id, 0.0)
-            
-        features = self.extract_features(doc_id, future_time)
-        features_scaled = self.scalers[doc_id].transform(features.reshape(1, -1))
-        predicted_temp = self.models[doc_id].predict(features_scaled)[0]
-        
-        # Ensure temperature is non-negative
-        return max(0.0, predicted_temp)
+        return self.estimate_future_temperature(doc_id, datetime.now())
         
     def get_migration_candidates(self, current_time: datetime) -> List[Dict]:
         """
@@ -250,46 +149,11 @@ class TemperaturePredictor:
         else:
             return 3
             
-    def execute_migration(self, migration: Dict) -> bool:
+    def should_migrate(self, doc_id: int, current_tier: int, predicted_tier: int, 
+                      temp_change: float) -> bool:
         """
-        Execute a tier migration for a document
-        
-        Args:
-            migration: Migration details from get_migration_candidates
-            
-        Returns:
-            Success status
+        Check if a document should be migrated
         """
-        # Implementation would connect to storage_manager.py
-        # This is a placeholder for the actual migration logic
-        doc_id = migration['doc_id']
-        source_tier = migration['current_tier']
-        target_tier = migration['target_tier']
-        
-        print(f"Migrating doc {doc_id} from Tier {source_tier} to Tier {target_tier}")
-        print(f"Temperature change: {migration['current_temp']:.3f} -> {migration['predicted_temp']:.3f}")
-        
-        # TODO: Implement actual migration logic with storage_manager
-        return True
-        
-    def save_state(self, filepath: str):
-        """Save predictor state to disk"""
-        state = {
-            'access_history': dict(self.access_history),
-            'temperature_history': dict(self.temperature_history),
-            'current_temperatures': self.current_temperatures,
-            'models': self.models,
-            'scalers': self.scalers
-        }
-        with open(filepath, 'wb') as f:
-            pickle.dump(state, f)
-            
-    def load_state(self, filepath: str):
-        """Load predictor state from disk"""
-        with open(filepath, 'rb') as f:
-            state = pickle.load(f)
-        self.access_history = defaultdict(lambda: deque(maxlen=1000), state['access_history'])
-        self.temperature_history = defaultdict(list, state['temperature_history'])
-        self.current_temperatures = state['current_temperatures']
-        self.models = state['models']
-        self.scalers = state['scalers']
+        # Only migrate if tier changes and temperature change is significant
+        return (current_tier != predicted_tier and 
+                abs(temp_change) >= self.migration_threshold)
