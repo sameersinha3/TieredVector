@@ -1,3 +1,4 @@
+import cohere
 import numpy as np
 import os
 
@@ -14,11 +15,14 @@ manager = StorageManager(
 
 manager.initialize()
 
-embedding = np.random.rand(768).astype(np.float32)
-manager.store_document(doc_id=42, embedding=embedding, temperature=0.5)
+query = "Where is the Eiffel Tower?"
+co = cohere.Client(os.getenv("COHERE_API_KEY"))
+query_embedding = np.array(co.embed(
+    model="multilingual-22-12",
+    texts=[query]
+).embeddings[0])
 
-query = np.random.rand(768).astype(np.float32)
-results = manager.retrieve_document(query, k=5, threshold=0.3) # Low threshold since our query is just a randint
+results = manager.retrieve_document(query_embedding, k=5, threshold=0.8) # Low threshold since our query is just a randint
 print(results)
 
 manager.close()

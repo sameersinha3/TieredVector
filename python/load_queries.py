@@ -1,5 +1,6 @@
 import cohere
 from dotenv import load_dotenv
+import itertools
 import numpy as np
 import os
 
@@ -9,9 +10,6 @@ load_dotenv()
 API_KEY = os.getenv("COHERE_API_KEY")
 co = cohere.Client(API_KEY)
 
-doc_embeddings = np.load("wiki_embeddings.npy")
-
-import itertools
 
 query_dataset = load_dataset("natural_questions", split="train", streaming=True)
 queries = [entry["question"]["text"] for entry in itertools.islice(query_dataset, 50000)]
