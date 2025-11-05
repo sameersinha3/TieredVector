@@ -11,12 +11,9 @@ from google.oauth2 import service_account
 STORAGE MANAGER CLASS MODIFIED TO USE GCS CONFIGURATION
 
 Example Usage in sandbox.py (temporary file)
-
 '''
 
-
 class StorageManager:
-
     def __init__(self, redis_host='localhost', redis_port=6379, lmdb_path='./tier2_lmdb',
                  gcs_project='VectorTier', gcs_bucket=None, gcs_blob_name=None, sa_key_path=None):
         
@@ -96,7 +93,7 @@ class StorageManager:
 
     def _store_in_redis(self, doc_id: int, embedding: np.ndarray) -> bool:
         try:
-            key = f"vector:{doc_id}"
+            key = f"doc{doc_id}"
             value = pickle.dumps(embedding)
             self.redis_client.set(key, value)
             return True
@@ -111,7 +108,7 @@ class StorageManager:
             return False
         try:
             with self.lmdb_env.begin(write=True) as txn:
-                key = f"vector_{doc_id}".encode()
+                key = f"doc{doc_id}".encode()
                 value = pickle.dumps(embedding)
                 txn.put(key, value)
             return True
@@ -126,7 +123,7 @@ class StorageManager:
             return False
         try:
             datapoint = {
-                "datapoint_id": str(doc_id),
+                "datapoint_id": f"doc{doc_id}",
                 "feature_vector": embedding.astype(np.float32).tolist(),
             }
 
@@ -141,6 +138,41 @@ class StorageManager:
         except Exception as e:
             print(f"GCS store error for doc {doc_id}: {e}")
             return False
+    
+
+    def _promote_from_gcs_to_lmdb(self, doc_id, remove=True):
+        # If we want to remove the vector from GCS, we need to reupload the blob. We can toggle this with remove=False
+        # If remove=False, we keep the vector in GCS and replicate it in LMDB.
+        if remove:
+            newlines = []
+        data = self.gcs_blob.download_as_text().splitlines()
+        for line in data:
+            entry = json.loads(line)
+            id, vec = entry["datapoint_id"][3:], entry["feature_vector"]
+            if remove and int(id) != doc_id:
+                newlines.append(line)
+            if int(id) == doc_id:
+                retrieved_id, retrieved_vec = id, vec
+                break
+        
+        if remove:
+            new_blob_text = "\n".join(newlines)
+            self.gcs_blob.upload_from_string(new_blob_text, content_type="text/plain")
+        
+        self._store_in_lmdb(retrieved_id, retrieved_vec)
+    
+    def _promote_from_lmdb_to_redis(self, doc_id):
+        with self.lmdb_env.begin() as txn:
+            value = txn.get(f"doc{doc_id}".encode())  # LMDB keys must be bytes
+            if not value:
+                print(f"[Promote] doc_id {doc_id} not found in LMDB.")
+                return
+
+            # Deserialize the embedding
+            embedding = pickle.loads(value)
+            trimmed_id = doc_id[3:]
+
+            self._store_in_redis(trimmed_id, embedding)
 
 
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
