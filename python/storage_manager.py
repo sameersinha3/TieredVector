@@ -173,6 +173,33 @@ class StorageManager:
             trimmed_id = doc_id[3:]
 
             self._store_in_redis(trimmed_id, embedding)
+        
+    def _demote_from_redis_to_lmdb(self, doc_id):
+        trimmed_id = doc_id[3:] 
+
+        value = self.redis_client.get(trimmed_id)
+        embedding = pickle.loads(value)
+        self._store_in_lmdb(trimmed_id, embedding)
+
+        self.redis_client.delete(trimmed_id)
+
+    def _demote_from_lmdb_to_gcs(self, doc_id):
+        with self.lmdb_env.begin() as txn:
+            value = txn.get(f"doc{doc_id}".encode()) 
+            if not value:
+                print(f"[Promote] doc_id {doc_id} not found in LMDB.")
+                return
+
+            # Deserialize the embedding
+            embedding = pickle.loads(value)
+        
+        data = self.gcs_blob.download_as_text().splitlines()
+        datapoint = {
+                "datapoint_id": doc_id,
+                "feature_vector": embedding.astype(np.float32).tolist(),
+            }
+        new_data = data + json.dumps(datapoint) + "\n"
+        self.gcs_blob.upload_from_string(new_data)
 
 
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
