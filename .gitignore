@@ -1,1 +1,8 @@
 venv/
+python/wiki_embeddings.npy
+python/query_embeddings.npy
+python/__pycache__
+*.rdb
+*.mdb
+.env
+secret/
