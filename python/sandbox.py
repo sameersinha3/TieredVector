@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 from storage_manager import StorageManager
 
 load_dotenv()
+
 manager = StorageManager(
-    gcs_project="VectorTier",
-    gcs_bucket=os.getenv("BUCKET_NAME"),
-    gcs_blob_name=os.getenv("BLOB"),
-    sa_key_path=os.getenv("SA_KEY")
+    chroma_host=os.getenv("VM_IP"),
+    chroma_port=8000,
+    chroma_collection="cold_vectors" 
 )
 
 manager.initialize()

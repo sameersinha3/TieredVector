@@ -4,10 +4,11 @@ import json
 import os
 import pickle
 import redis
+import chromadb # CHANGED: Added chromadb
 
 from dotenv import load_dotenv
-from google.cloud import storage
-from google.oauth2 import service_account
+# REMOVED: from google.cloud import firestore
+# REMOVED: from google.oauth2 import service_account
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -80,33 +81,50 @@ env.close()
 
 print("LMDB Complete")
 
+# --- START: CHROMA DB TIER 3 ---
+
 tier3_indices = np.where(tier_assignment == 3)[0]  # array of indices
 embeddings = np.array(doc_embeddings)  # shape (N, d)
-project = "VectorTier"
-location = os.getenv("REGION")
-bucket = os.getenv("BUCKET_NAME")
-blob = os.getenv("BLOB")
 
-# Initialize GCS Storage
-credentials = service_account.Credentials.from_service_account_file(
-    os.getenv("SA_KEY")
-)
-storage_client = storage.Client(credentials=credentials)
-bucket = storage_client.bucket(bucket)
-blob = bucket.blob(blob)
 
-count = 0
-with blob.open("w") as f:
-    for i in tier3_indices:
-        datapoint = {
-            "datapoint_id": f"doc{i}",  # unique ID for retrieval
-            "feature_vector": embeddings[i].astype(np.float32).tolist(),
-        }
-        
-        # Write each datapoint as a new line in the file
-        f.write(json.dumps(datapoint) + "\n")
-        count += 1
+CHROMA_HOST_IP = os.getenv("VM_IP")
+
+print(f"Connecting to ChromaDB at {CHROMA_HOST_IP}...")
+try:
+    chroma_client = chromadb.HttpClient(host=CHROMA_HOST_IP, port=8000)
+    collection = chroma_client.get_or_create_collection(name="cold_vectors")
+    print("ChromaDB connected.")
+except Exception as e:
+    print(f"Failed to connect to ChromaDB: {e}")
+    print("Please ensure the ChromaDB server is running on your VM and port 8000 is open.")
+    exit()
+
+
+# Prepare data for ChromaDB batch upload
+ids_to_add = [f"doc{i}" for i in tier3_indices]
+embeddings_to_add = [embeddings[i].astype(np.float32).tolist() for i in tier3_indices]
+
+batch_size = 500  # ChromaDB can handle large batches, 500 is very safe
+total_docs = 0
+
+for j in range(0, len(ids_to_add), batch_size):
+    batch_ids = ids_to_add[j:j+batch_size]
+    batch_embeddings = embeddings_to_add[j:j+batch_size]
+    
+    print(f"Committing batch of {len(batch_ids)} documents to ChromaDB...")
+    
+    # Use 'upsert' - it's robust (creates or updates)
+    collection.upsert(
+        ids=batch_ids,
+        embeddings=batch_embeddings
+    )
+    total_docs += len(batch_ids)
+
+print(f"ChromaDB Complete. Stored {total_docs} vectors.")
+
+# --- END: CHROMA DB TIER 3 ---
+
 
 print(f"Stored {len(tier1_indices)} vectors in Redis (Tier 1)")
 print(f"Stored {len(tier2_indices)} vectors in LMDB (Tier 2)")
-print(f"Stored {len(tier3_indices)} vectors in GCS (Tier 3)")
+print(f"Stored {len(tier3_indices)} vectors in Cloud (ChromaDB) (Tier 3)")
