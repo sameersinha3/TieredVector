@@ -1,8 +1,24 @@
 # System Design
 
-## GCS / Vertex
-I have decided that GCS is a better fit due to the nature of cold storage - we likely value cost savings in the cold tier more than efficient lookup so we are using normal cloud storage rather than Vertex AI, which enables more efficient lookup but much higher cost. The code is configured to run with a service account I have created (when running simulate_temperature).
+## Cloud Storage (for now)
+Tier 3 (cold storage) will in the future be massive. Thus it makes only makes sense to use vector search using a VectorDB. Vertex AI is not free, and while AWS is free, it does have usage limits for the free tier. Instead, I have decided to simulate cloud storage by spinning up a VM on CloudLab, starting ChromaDB and connecting to it. The steps to this are to start Chroma
 
-## TODO
+```bash
+sudo apt update
+sudo apt install python3-pip
+pip install chromadb
+export PATH="$PATH:/users/sameers5/.local/bin"
+echo 'export PATH="$PATH:/users/sameers5/.local/bin"' >> ~/.bashrc
+source ~/.bashrc
+chroma run --host 0.0.0.0 --port 8000 --path ./chroma_data
+```
+Now Chroma is running. We need to retrieve the VM's IP as follows
+```bash
+curl ifconfig.me
+```
 
-server.py likely does not need to run on Flask anymore since we have reverted to entirely in Python. It can just be functions for storing and retrieving, with a basic scoring mechanism. We should also have a migration method that retrieves an embedding from Tier X, moves it to Tier Y. This will also require an eviction policy, or an eviction function to kick out the lowest scored document within a tier.
+Then paste the output into your env file with VM_IP as the key
+
+Now you should be able to run simulate_temperature.py which places the vectors across the three tiers (local redis and local LMDB). If you haven't, you will need to run load_queries.py and load_dataset.py once to get the *_embeddings.npy files (this can take a while). 
+
+Then, you can run a query in sandbox.py by replacing the query string.
