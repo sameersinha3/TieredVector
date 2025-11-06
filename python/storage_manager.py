@@ -132,7 +132,7 @@ class StorageManager:
             if self.gcs_blob.exists():
                 data = self.gcs_blob.download_as_text()
 
-            new_data = data + json.dumps(datapoint) + "\n"
+            new_data = "\n".join(data + [json.dumps(datapoint)]) + "\n"
             self.gcs_blob.upload_from_string(new_data)
             return True
         except Exception as e:
@@ -198,7 +198,7 @@ class StorageManager:
                 "datapoint_id": doc_id,
                 "feature_vector": embedding.astype(np.float32).tolist(),
             }
-        new_data = data + json.dumps(datapoint) + "\n"
+        new_data = "\n".join(data + [json.dumps(datapoint)]) + "\n"
         self.gcs_blob.upload_from_string(new_data)
 
 

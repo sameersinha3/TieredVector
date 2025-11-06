@@ -15,14 +15,14 @@ manager = StorageManager(
 
 manager.initialize()
 
-query = "Where is the Eiffel Tower?"
+query = "When was youtube founded"
 co = cohere.Client(os.getenv("COHERE_API_KEY"))
 query_embedding = np.array(co.embed(
     model="multilingual-22-12",
     texts=[query]
 ).embeddings[0])
 
-results = manager.retrieve_document(query_embedding, k=5, threshold=0.8) # Low threshold since our query is just a randint
+results = manager.retrieve_document(query_embedding, k=5, threshold=0.8)
 print(results)
 
 manager.close()

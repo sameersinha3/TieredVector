@@ -64,7 +64,7 @@ r = redis.Redis(host='localhost', port=6379)
 # Store Tier 1 vectors
 tier1_indices = np.where(tier_assignment == 1)[0]
 for idx in tier1_indices:
-    r.set(f'vector:{idx}', pickle.dumps(doc_embeddings[idx]))
+    r.set(f'doc{idx}', pickle.dumps(doc_embeddings[idx]))
 
 print("Redis Complete")
 
@@ -73,7 +73,7 @@ env = lmdb.open('tier2_lmdb', map_size=1_000_000_000)
 tier2_indices = np.where(tier_assignment == 2)[0]
 with env.begin(write=True) as txn:
     for idx in tier2_indices:
-        key = f'vector_{idx}'.encode('utf-8')
+        key = f'doc{idx}'.encode('utf-8')
         value = pickle.dumps(doc_embeddings[idx])
         txn.put(key, value)
 env.close()
@@ -99,7 +99,7 @@ count = 0
 with blob.open("w") as f:
     for i in tier3_indices:
         datapoint = {
-            "datapoint_id": str(i),  # unique ID for retrieval
+            "datapoint_id": f"doc{i}",  # unique ID for retrieval
             "feature_vector": embeddings[i].astype(np.float32).tolist(),
         }
         
