@@ -1,73 +1,76 @@
 import redis
 import pickle
 import numpy as np
-import lmdb
-import json
+import chromadb
 import os
 
-# CHANGED: Import chromadb
-import chromadb
-
-'''
-STORAGE MANAGER CLASS MODIFIED TO USE CHROMA DB (VM) CONFIGURATION
-'''
-
 class StorageManager:
-    def __init__(self, redis_host='localhost', redis_port=6379, lmdb_path='./tier2_lmdb',
-                 # NEW: ChromaDB client settings
-                 chroma_host=os.getenv("VM_IP")
-                 chroma_port=8000,
-                 chroma_collection='cold_vectors'):
+    def __init__(self, redis_host='localhost', redis_port=6379, 
+                 tier2_path='./tier2_chroma_db',           # For Local Tier 2
+                 tier3_host=os.getenv("VM_IP"),          # For Remote Tier 3
+                 tier3_port=8000,
+                 tier3_collection='cold_vectors'):
         
+        # --- Tier 1 (Redis) ---
         self.redis_host = redis_host
         self.redis_port = redis_port
-        self.lmdb_path = lmdb_path
-
         self.redis_client = None
-        self.lmdb_env = None
 
-        # NEW: ChromaDB setup
-        self.chroma_host = chroma_host
-        self.chroma_port = chroma_port
-        self.chroma_collection_name = chroma_collection
-        self.chroma_client = None
-        self.chroma_collection = None # This will be our collection reference
+        # --- Tier 2 (Local ChromaDB) ---
+        self.tier2_path = tier2_path
+        self.tier2_client = None
+        self.tier2_collection = None
 
+        # --- Tier 3 (Remote ChromaDB) ---
+        self.tier3_host = tier3_host
+        self.tier3_port = tier3_port
+        self.tier3_collection_name = tier3_collection
+        self.tier3_client = None
+        self.tier3_collection = None
+
+        # --- Temperature Thresholds ---
         self.tier1_threshold = 0.9
         self.tier2_threshold = 0.7
 
 
     def initialize(self) -> bool:
-        """Initialize Redis, LMDB, and ChromaDB connections."""
+        """Initialize Redis, Local ChromaDB, and Remote ChromaDB connections."""
+        
+        # --- Tier 1 (Redis) ---
         try:
             self.redis_client = redis.Redis(host=self.redis_host, port=self.redis_port, decode_responses=False)
             self.redis_client.ping()
-            print("Redis connected")
+            print("Tier 1 (Redis) connected")
         except Exception as e:
-            print(f"Failed to connect to Redis: {e}")
+            print(f"Failed to connect to Tier 1 Redis: {e}")
             return False
             
+        # --- Tier 2 (Local ChromaDB) ---
         try:
-            self.lmdb_env = lmdb.open(self.lmdb_path, map_size=1_000_000_000)
-            print("LMDB opened")
+            self.tier2_client = chromadb.PersistentClient(path=self.tier2_path)
+            self.tier2_collection = self.tier2_client.get_or_create_collection(
+                name="warm_vectors",
+                metadata={"hnsw:space": "cosine"}
+            )
+            print(f"Tier 2 (Local ChromaDB) initialized at {self.tier2_path}")
         except Exception as e:
-            print(f"Failed to open LMDB: {e}")
-            self.lmdb_env = None
+            print(f"Failed to initialize Tier 2 ChromaDB: {e}")
+            return False # Fail if local DB can't start
             
-        # CHANGED: Initialize ChromaDB client instead of Firestore/GCS
+        # --- Tier 3 (Remote ChromaDB) ---
         try:
-            self.chroma_client = chromadb.HttpClient(
-                host=self.chroma_host, 
-                port=self.chroma_port
+            self.tier3_client = chromadb.HttpClient(
+                host=self.tier3_host, 
+                port=self.tier3_port
             )
-            # This ensures the collection exists
-            self.chroma_collection = self.chroma_client.get_or_create_collection(
-                name=self.chroma_collection_name
+            self.tier3_collection = self.tier3_client.get_or_create_collection(
+                name=self.tier3_collection_name,
+                metadata={"hnsw:space": "cosine"}
             )
-            print(f"ChromaDB connected (Host: {self.chroma_host}, Collection: {self.chroma_collection_name})")
+            print(f"Tier 3 (Remote ChromaDB) connected (Host: {self.tier3_host})")
         except Exception as e:
-            print(f"Failed to initialize ChromaDB: {e}")
-            self.chroma_client = None
+            print(f"Failed to initialize Tier 3 ChromaDB: {e}")
+            self.tier3_client = None # Allow app to run without remote DB
 
         return True
 
@@ -76,9 +79,9 @@ class StorageManager:
         if temperature >= self.tier1_threshold:
             return 1  # Redis
         elif temperature >= self.tier2_threshold:
-            return 2  # LMDB
+            return 2  # CHANGED: Tier 2 (Local ChromaDB)
         else:
-            return 3  # CHANGED: ChromaDB
+            return 3  # Tier 3 (Remote ChromaDB)
 
 
     def store_document(self, doc_id: int, embedding: np.ndarray, temperature: float) -> bool:
@@ -88,15 +91,16 @@ class StorageManager:
             if tier == 1:
                 return self._store_in_redis(doc_id, embedding)
             elif tier == 2:
-                return self._store_in_lmdb(doc_id, embedding)
+                # CHANGED: Store in local ChromaDB
+                return self._store_in_tier2_chroma(doc_id, embedding)
             else:
-                # CHANGED: Store in ChromaDB
-                return self._store_in_chroma(doc_id, embedding)
+                # CHANGED: Store in remote ChromaDB
+                return self._store_in_tier3_chroma(doc_id, embedding)
         except Exception as e:
             print(f"Failed to store document {doc_id}: {e}")
             return False
 
-    # ... _store_in_redis and _store_in_lmdb are unchanged ...
+
     def _store_in_redis(self, doc_id: int, embedding: np.ndarray) -> bool:
         # (This code is unchanged)
         try:
@@ -108,107 +112,184 @@ class StorageManager:
             print(f"Redis store error for doc {doc_id}: {e}")
             return False
 
-
-    def _store_in_lmdb(self, doc_id: int, embedding: np.ndarray) -> bool:
-        # (This code is unchanged)
-        if not self.lmdb_env:
-            print(f"LMDB not available, skipping doc {doc_id}")
-            return False
-        try:
-            with self.lmdb_env.begin(write=True) as txn:
-                key = f"doc{doc_id}".encode()
-                value = pickle.dumps(embedding)
-                txn.put(key, value)
-            return True
-        except Exception as e:
-            print(f"LMDB store error for doc {doc_id}: {e}")
-            return False
-            
     
-    # CHANGED: Replaced _store_in_firestore with _store_in_chroma
-    def _store_in_chroma(self, doc_id: int, embedding: np.ndarray) -> bool:
-        """Stores a single document in ChromaDB."""
-        if not self.chroma_collection:
-            print("ChromaDB not initialized")
+    # --- NEW: Replaces _store_in_lmdb ---
+    def _store_in_tier2_chroma(self, doc_id: int, embedding: np.ndarray) -> bool:
+        """Stores a single document in Tier 2 (Local ChromaDB)."""
+        if not self.tier2_collection:
+            print("Tier 2 ChromaDB not initialized")
             return False
         try:
             doc_key = f"doc{doc_id}"
-            
-            # ChromaDB stores the vector itself
-            # We use upsert to create or overwrite
-            self.chroma_collection.upsert(
+            self.tier2_collection.upsert(
                 ids=[doc_key],
                 embeddings=[embedding.astype(np.float32).tolist()]
-                # You could also add metadatas=[{"source": "wiki"}]
             )
             return True
         except Exception as e:
-            print(f"ChromaDB store error for doc {doc_id}: {e}")
+            print(f"Tier 2 ChromaDB store error for doc {doc_id}: {e}")
+            return False
+
+            
+    # --- RENAMED: Was _store_in_chroma ---
+    def _store_in_tier3_chroma(self, doc_id: int, embedding: np.ndarray) -> bool:
+        """Stores a single document in Tier 3 (Remote ChromaDB)."""
+        if not self.tier3_collection:
+            print("Tier 3 ChromaDB not initialized")
+            return False
+        try:
+            doc_key = f"doc{doc_id}"
+            self.tier3_collection.upsert(
+                ids=[doc_key],
+                embeddings=[embedding.astype(np.float32).tolist()]
+            )
+            return True
+        except Exception as e:
+            print(f"Tier 3 ChromaDB store error for doc {doc_id}: {e}")
             return False
     
+    
+    # --- ALL PROMOTION/DEMOTION FUNCTIONS RE-WRITTEN ---
 
-    # CHANGED: Replaced _promote_from_firestore_to_lmdb
-    def _promote_from_chroma_to_lmdb(self, doc_id, remove=True):
-        """Fetches a doc from ChromaDB and puts it in LMDB."""
-        if not self.chroma_collection:
-            print("ChromaDB not initialized")
+    def _promote_from_tier3_to_tier2(self, doc_id, remove=True):
+        """Fetches a doc from Tier 3 (Remote) and puts it in Tier 2 (Local)."""
+        if not self.tier3_collection or not self.tier2_collection:
+            print("DBs not initialized for promotion")
             return
         
         try:
             doc_key = f"doc{doc_id}"
-            # Get the embedding by its ID
-            result = self.chroma_collection.get(ids=[doc_key], include=["embeddings"])
+            result = self.tier3_collection.get(ids=[doc_key], include=["embeddings"])
             
-            if not result['embeddings']:
-                print(f"[Promote] doc_id {doc_key} not found in ChromaDB.")
+            if not result['ids']:
+                print(f"[Promote] doc_id {doc_key} not found in Tier 3.")
                 return
 
-            embedding = np.array(result['embeddings'][0], dtype=np.float32)
-            self._store_in_lmdb(doc_id, embedding)
+            # Add to Tier 2
+            self.tier2_collection.upsert(
+                ids=result['ids'],
+                embeddings=result['embeddings']
+            )
 
             if remove:
-                self.chroma_collection.delete(ids=[doc_key])
+                self.tier3_collection.delete(ids=[doc_key])
                 
         except Exception as e:
-            print(f"[Promote Chroma->LMDB] Error: {e}")
+            print(f"[Promote T3->T2] Error: {e}")
 
-    # ... _promote_from_lmdb_to_redis is unchanged ...
     
-    # CHANGED: Replaced _demote_from_lmdb_to_gcs/firestore
-    def _demote_from_lmdb_to_chroma(self, doc_id):
-        """Demotes from LMDB to ChromaDB"""
-        key_bytes = f"doc{doc_id}".encode()
-        
-        with self.lmdb_env.begin(write=True) as txn:
-            value = txn.get(key_bytes) 
-            if not value:
-                print(f"[Demote] doc_id {doc_id} not found in LMDB.")
+    def _demote_from_tier2_to_tier3(self, doc_id, remove=True):
+        """Fetches a doc from Tier 2 (Local) and puts it in Tier 3 (Remote)."""
+        if not self.tier3_collection or not self.tier2_collection:
+            print("DBs not initialized for demotion")
+            return
+
+        try:
+            doc_key = f"doc{doc_id}"
+            result = self.tier2_collection.get(ids=[doc_key], include=["embeddings"])
+
+            if not result['ids']:
+                print(f"[Demote] doc_id {doc_key} not found in Tier 2.")
                 return
 
-            embedding = pickle.loads(value)
-            trimmed_id = key_bytes.decode()[3:] # "123"
-        
-            # Store in ChromaDB
-            self._store_in_chroma(trimmed_id, embedding)
+            # Add to Tier 3
+            self.tier3_collection.upsert(
+                ids=result['ids'],
+                embeddings=result['embeddings']
+            )
+
+            if remove:
+                self.tier2_collection.delete(ids=[doc_key])
+
+        except Exception as e:
+            print(f"[Demote T2->T3] Error: {e}")
+
+
+    def _promote_from_tier2_to_redis(self, doc_id, remove=True):
+        """Fetches a doc from Tier 2 (Local) and puts it in Tier 1 (Redis)."""
+        if not self.tier2_collection or not self.redis_client:
+            print("DBs not initialized for promotion")
+            return
+
+        try:
+            doc_key = f"doc{doc_id}"
+            result = self.tier2_collection.get(ids=[doc_key], include=["embeddings"])
+
+            if not result['ids']:
+                print(f"[Promote] doc_id {doc_key} not found in Tier 2.")
+                return
             
-            # Delete from LMDB
-            txn.delete(key_bytes)
+            # Convert list embedding back to numpy array for Redis
+            embedding = np.array(result['embeddings'][0], dtype=np.float32)
+            trimmed_id = doc_key[3:] # 'doc123' -> '123'
+            
+            # Store in Redis
+            self._store_in_redis(trimmed_id, embedding)
+
+            if remove:
+                self.tier2_collection.delete(ids=[doc_key])
+                
+        except Exception as e:
+            print(f"[Promote T2->Redis] Error: {e}")
+
+
+    def _demote_from_redis_to_tier2(self, doc_id, remove=True):
+        """Fetches a doc from Tier 1 (Redis) and puts it in Tier 2 (Local)."""
+        if not self.tier2_collection or not self.redis_client:
+            print("DBs not initialized for demotion")
+            return
+        
+        try:
+            doc_key = f"doc{doc_id}"
+            value = self.redis_client.get(doc_key)
+            if not value:
+                print(f"[Demote] doc_id {doc_key} not found in Redis.")
+                return
+
+            # Get embedding from Redis
+            embedding = pickle.loads(value)
+
+            # Add to Tier 2
+            self.tier2_collection.upsert(
+                ids=[doc_key],
+                embeddings=[embedding.astype(np.float32).tolist()]
+            )
+
+            if remove:
+                self.redis_client.delete(doc_key)
+        
+        except Exception as e:
+            print(f"[Demote Redis->T2] Error: {e}")
 
 
     def retrieve_document(self, query_embedding: np.ndarray, k: int = 3, threshold: float = 0.75):
-        query_embedding = np.array(query_embedding, dtype=np.float32)
+        
+        # 1. --- NORMALIZE QUERY ONCE ---
+        # (This assumes all stored vectors are also normalized)
+        norm = np.linalg.norm(query_embedding)
+        if norm == 0:
+            print("Warning: Zero-vector query.")
+            return []
+            
+        query_norm = (query_embedding / norm).astype(np.float32)
+        query_list = query_norm.tolist() # For ChromaDB
+        
         retrieved = []
         retrieved_ids = set()
 
-        # ... Tier 1 (Redis) and Tier 2 (LMDB) are unchanged ...
-        # --- Tier 1: Redis ---
+        # --- Tier 1: Redis (Manual Scan) ---
         if self.redis_client:
             try:
                 keys = self.redis_client.keys("doc*") 
                 candidates = []
                 for key in keys:
-                    emb = pickle.loads(self.redis_client.get(key))
-                    score = np.dot(query_embedding, emb) / (np.linalg.norm(query_embedding) * np.linalg.norm(emb))
+                    # Load the stored NORMALIZED vector
+                    emb_norm = pickle.loads(self.redis_client.get(key))
+                    
+                    # *** THIS IS THE CHANGE ***
+                    # Dot product of two normalized vectors IS the cosine similarity
+                    score = np.dot(query_norm, emb_norm)
+                    
                     if score >= threshold:
                         doc_id = key.decode()
                         candidates.append((score, doc_id))
@@ -216,68 +297,76 @@ class StorageManager:
                 candidates.sort(reverse=True, key=lambda x: x[0])
                 for s, did in candidates:
                     if len(retrieved) < k and did not in retrieved_ids:
-                        retrieved.append({"id": did, "score": s, "source": "redis"})
+                        retrieved.append({"id": did, "score": s, "source": "redis (T1)"})
                         retrieved_ids.add(did)
-                if len(retrieved) >= k: return retrieved
-            except Exception as e: print(f"[Redis simple search] error: {e}")
 
-        # --- Tier 2: LMDB ---
+                if len(retrieved) >= k:
+                    return retrieved
+            except Exception as e:
+                print(f"[Redis simple search] error: {e}")
+
+
+        # --- Tier 2: Local ChromaDB (ANN Search) ---
         remaining = k - len(retrieved)
-        if remaining > 0 and self.lmdb_env:
+        if remaining > 0 and self.tier2_collection:
             try:
-                with self.lmdb_env.begin() as txn:
-                    cursor = txn.cursor()
-                    best = []
-                    for key_bytes, value in cursor:
-                        key = key_bytes.decode()
-                        if key in retrieved_ids: continue
-                        emb = pickle.loads(value)
-                        score = np.dot(query_embedding, emb) / (np.linalg.norm(query_embedding) * np.linalg.norm(emb))
-                        if score >= threshold:
-                            best.append((score, key))
-                    
-                    best.sort(reverse=True, key=lambda x: x[0])
-                    for s, did in best:
-                         if len(retrieved) < k and did not in retrieved_ids:
-                            retrieved.append({"id": did, "score": s, "source": "lmdb"})
-                            retrieved_ids.add(did)
-                    if len(retrieved) >= k: return retrieved
-            except Exception as e: print(f"[LMDB] search error: {e}")
-
-
-        # --- Tier 3: ChromaDB ---
-        # CHANGED: Search from ChromaDB instead of Firestore scan
-        remaining = k - len(retrieved)
-        if remaining > 0 and self.chroma_collection:
-            try:
-                # This is the magic!
-                # ChromaDB does the search for you on the server.
-                results = self.chroma_collection.query(
-                    query_embeddings=[query_embedding.tolist()],
+                # *** THIS IS THE CHANGE ***
+                # Query using the normalized query list
+                results = self.tier2_collection.query(
+                    query_embeddings=[query_list],
                     n_results=remaining
-                    # You can also add a 'where' filter
                 )
                 
                 ids = results['ids'][0]
-                distances = results['distances'][0]
+                distances = results['distances'][0] # This is now Cosine Distance
                 
                 for doc_id, dist in zip(ids, distances):
                     if doc_id in retrieved_ids:
                         continue
-                        
-                    # Note: Chroma gives distance (smaller is better). 
-                    # Your code used similarity (higher is better).
-                    # We'll just use distance for now.
-                    # 1 - dist is cosine similarity if using 'cosine' distance
-                    score = 1 - dist # Assumes cosine distance
+                    
+                    # *** THIS IS THE CHANGE ***
+                    # Score = 1.0 - Cosine Distance
+                    score = 1.0 - dist 
 
                     if score >= threshold:
                         if len(retrieved) < k:
-                            retrieved.append({"id": doc_id, "score": score, "source": "chroma"})
+                            retrieved.append({"id": doc_id, "score": score, "source": "chroma_local (T2)"})
+                            retrieved_ids.add(doc_id)
+            
+            except Exception as e:
+                print(f"[ChromaDB T2] retrieval error: {e}")
+        
+        if len(retrieved) >= k:
+            return retrieved
+
+
+        # --- Tier 3: Remote ChromaDB (ANN Search) ---
+        remaining = k - len(retrieved) # Re-check remaining k
+        if remaining > 0 and self.tier3_collection:
+            try:
+                # *** THIS IS THE CHANGE ***
+                # Query using the normalized query list
+                results = self.tier3_collection.query(
+                    query_embeddings=[query_list],
+                    n_results=remaining
+                )
+                
+                ids = results['ids'][0]
+                distances = results['distances'][0] # This is now Cosine Distance
+                
+                for doc_id, dist in zip(ids, distances):
+                    if doc_id in retrieved_ids:
+                        continue
+                    
+                    score = 1.0 - dist
+
+                    if score >= threshold:
+                        if len(retrieved) < k:
+                            retrieved.append({"id": doc_id, "score": score, "source": "chroma_remote (T3)"})
                             retrieved_ids.add(doc_id)
                         
             except Exception as e:
-                print(f"[ChromaDB] retrieval error: {e}")
+                print(f"[ChromaDB T3] retrieval error: {e}")
 
         return retrieved if retrieved else None
 
@@ -285,7 +374,4 @@ class StorageManager:
     def close(self):
         if self.redis_client:
             self.redis_client.close()
-        if self.lmdb_env:
-            self.lmdb_env.close()
-        # NEW: Chroma client doesn't have a .close()
         print("Storage connections closed")

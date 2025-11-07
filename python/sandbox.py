@@ -8,14 +8,14 @@ from storage_manager import StorageManager
 load_dotenv()
 
 manager = StorageManager(
-    chroma_host=os.getenv("VM_IP"),
-    chroma_port=8000,
-    chroma_collection="cold_vectors" 
+    tier3_host=os.getenv("VM_IP"),
+    tier3_port=8000,
+    tier3_collection="cold_vectors" 
 )
 
 manager.initialize()
 
-query = "When was youtube founded"
+query = "cloud storage systems"
 co = cohere.Client(os.getenv("COHERE_API_KEY"))
 query_embedding = np.array(co.embed(
     model="multilingual-22-12",
