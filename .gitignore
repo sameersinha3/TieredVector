@@ -2,7 +2,9 @@ venv/
 python/wiki_embeddings.npy
 python/query_embeddings.npy
 python/__pycache__
+python/tier2_chroma_db
 *.rdb
 *.mdb
+python/tier_results.npz
 .env
 secret/
