@@ -1,21 +1,21 @@
-# Evaluation: Same Performance → Cost Reductions
+# Evaluation: Memory-Performance Tradeoff
 
-Evaluates cost savings of the tiered system while maintaining the same performance as a baseline (all data in Tier 1).
+Evaluates the efficiency of the tiered system by comparing memory usage and performance retention against a baseline (all data in Tier 1/RAM).
 
 ## Quick Start
 
 ```bash
 cd python
 
-# 1. Run evaluation
+# Run evaluation
 python evaluate.py --queries 100 --k 5 --threshold 0.75
 
-# 2. Calculate costs
-python calc_cost.py --log ../data/query_log_baseline.csv --system baseline
-python calc_cost.py --log ../data/query_log_tiered.csv --system tiered
+# Analyze results
+python analyze_results.py --log ../data/query_log_baseline.csv --system baseline
+python analyze_results.py --log ../data/query_log_tiered.csv --system tiered
 
-# 3. Compare results
-python compare_costs.py
+# Compare systems
+python compare_results.py
 ```
 
 ## Evaluation Process
@@ -27,54 +27,68 @@ python evaluate.py [--queries N] [--k K] [--threshold T]
 ```
 
 **What it does:**
-- Sets up baseline system (all data in Tier 1/Redis)
-- Sets up tiered system (temperature-based distribution)
+- Sets up baseline system (all data in Tier 1/Redis - 100% RAM)
+- Sets up tiered system (temperature-based distribution - X% RAM)
 - Runs queries against both systems
+- Calculates memory ratios and performance retention
 - Logs metrics to `data/query_log_baseline.csv` and `data/query_log_tiered.csv`
+- Saves summary to `data/evaluation_summary.txt`
 
-**Output:** Query logs with latency, tier hits, operations, and bytes transferred.
+**Output:** Memory-performance tradeoff analysis showing:
+- % RAM used vs baseline
+- % Performance retained vs baseline
+- Efficiency summary
 
-### Step 2: Calculate Costs
+### Step 2: Analyze Results
 
 ```bash
-python calc_cost.py --log <log_file> --system <baseline|tiered>
+python analyze_results.py --log <log_file> --system <baseline|tiered>
 ```
 
-**Output:** Cost breakdown (storage, operations, egress, CPU) and latency statistics.
+**Output:** Detailed latency statistics (mean, median, p95, p99) per system.
 
-### Step 3: Compare Results
+### Step 3: Compare Systems
 
 ```bash
-python compare_costs.py
+python compare_results.py
 ```
 
 **Output:** Side-by-side comparison showing:
-- Cost savings percentage
-- Performance comparison (mean, p95, p99 latency)
-- Verification that performance targets are met
+- Memory reduction percentage
+- Performance retention percentage
+- Efficiency summary
 
-## Performance Targets
+## Metrics
 
-Both systems must meet (configurable in `config/cost.yaml`):
-- Mean latency < 150ms
-- P95 latency < 200ms  
-- P99 latency < 500ms
+### Memory Ratio
+```
+RAM fraction = (Tiered RAM / Baseline RAM) × 100%
+RAM saved = 100% - RAM fraction
+```
+
+### Performance Retention
+```
+Performance retained = (Baseline latency / Tiered latency) × 100%
+```
+Higher percentage = better performance retention.
 
 ## Expected Results
 
 The tiered system should demonstrate:
-- ✓ Same or similar performance
-- ✓ Lower total cost 
-- ✓ Cost savings from intelligent tier placement
+- ✓ Significant RAM reduction (typically 80-95% less RAM)
+- ✓ High performance retention (typically 70-90% of baseline)
+- ✓ Efficient memory-performance tradeoff
+
+**Example:** "With 5% RAM usage, we retain 80% of baseline performance, representing a 95% reduction in memory footprint."
 
 ## Configuration
 
-Edit `config/cost.yaml` to adjust:
+Edit `config/evaluation.yaml` to adjust:
 - Performance targets (`performance_targets`)
-- Unit prices (`unit_prices`)
-- Experiment duration (`experiment.hours`)
+- Evaluation parameters (`evaluation`)
 
 ## Output Files
 
 - `data/query_log_baseline.csv` - Baseline system metrics
 - `data/query_log_tiered.csv` - Tiered system metrics
+- `data/evaluation_summary.txt` - Summary of memory-performance tradeoff

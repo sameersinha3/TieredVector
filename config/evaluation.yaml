@@ -1,0 +1,13 @@
+performance_targets:
+  # Performance targets for evaluation
+  # Both baseline and tiered systems should meet these targets
+  p95_latency_ms: 200.0    # 95th percentile latency must be below this (ms)
+  p99_latency_ms: 500.0    # 99th percentile latency must be below this (ms)
+  mean_latency_ms: 150.0   # Mean latency should be below this (ms)
+
+evaluation:
+  # Evaluation parameters
+  num_queries: 100         # Number of queries to run
+  k: 5                     # Number of results to retrieve per query
+  threshold: 0.75          # Similarity threshold for results
+

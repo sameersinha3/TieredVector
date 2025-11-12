@@ -1,12 +1,12 @@
 """
-Evaluation script for Option 2: Same Performance → Cost Reductions
+Evaluation script: Memory-Performance Tradeoff
 
 This script:
-1. Sets up a baseline system (all data in Tier 1/Redis)
-2. Sets up a tiered system (temperature-based tiering)
+1. Sets up a baseline system (all data in Tier 1/Redis - 100% RAM)
+2. Sets up a tiered system (temperature-based tiering - X% RAM)
 3. Runs queries against both systems
-4. Ensures both meet performance targets
-5. Calculates and compares costs
+4. Measures memory ratios and performance retention
+5. Reports efficiency: % RAM saved vs % performance retained
 """
 import os
 import sys
@@ -25,15 +25,15 @@ from query_logger import QueryLogger, QueryTimer
 load_dotenv()
 
 # Configuration
-COST_CFG = "config/cost.yaml"
+EVAL_CFG = "config/evaluation.yaml"
 QUERY_LOG_BASELINE = "data/query_log_baseline.csv"
 QUERY_LOG_TIERED = "data/query_log_tiered.csv"
 EMBEDDING_DIM = 768  # Cohere multilingual-22-12 embedding dimension
 
 
 def load_config():
-    """Load cost and performance configuration."""
-    with open(COST_CFG, 'r') as f:
+    """Load evaluation configuration."""
+    with open(EVAL_CFG, 'r') as f:
         return yaml.safe_load(f)
 
 
@@ -84,11 +84,50 @@ def setup_baseline_system(doc_embeddings: np.ndarray,
     }
 
 
+def calculate_tiered_ram_usage(tier_results_path: str, doc_embeddings: np.ndarray) -> float:
+    """
+    Calculate RAM usage for tiered system (only Tier 1 documents).
+    Returns RAM size in GB.
+    """
+    if not os.path.exists(tier_results_path):
+        # Try common paths
+        possible_paths = [
+            "tier_results.npz",
+            "python/tier_results.npz",
+            "../tier_results.npz",
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                tier_results_path = path
+                break
+    
+    if not os.path.exists(tier_results_path):
+        raise FileNotFoundError(
+            f"Tier results not found. Please run simulate_temperature.py first."
+        )
+    
+    tier_data = np.load(tier_results_path)
+    tier_assignment = tier_data['tier_assignment']
+    
+    # Calculate RAM usage: only Tier 1 documents
+    tier1_indices = np.where(tier_assignment == 1)[0]
+    ram_bytes = 0
+    
+    for idx in tier1_indices:
+        if idx < len(doc_embeddings):
+            embedding = doc_embeddings[idx]
+            # Estimate: pickled embedding size
+            ram_bytes += len(pickle.dumps(embedding.astype(np.float32)))
+    
+    ram_gb = ram_bytes / (1024 ** 3)
+    return ram_gb
+
+
 def setup_tiered_system(tier_results_path: str = None,
-                       redis_client: redis.Redis = None) -> StorageManager:
+                       redis_client: redis.Redis = None) -> Tuple[StorageManager, Dict]:
     """
     Setup tiered system using temperature-based tiering.
-    Returns configured StorageManager.
+    Returns (StorageManager, storage_stats).
     """
     print("=" * 70)
     print("SETTING UP TIERED SYSTEM (Temperature-based)")
@@ -135,12 +174,24 @@ def setup_tiered_system(tier_results_path: str = None,
     if not storage_manager.initialize():
         raise RuntimeError("Failed to initialize tiered storage manager")
     
-    print(f"Tiered system initialized")
-    print(f"  Tier 1 count: {np.sum(tier_assignment == 1)}")
-    print(f"  Tier 2 count: {np.sum(tier_assignment == 2)}")
-    print(f"  Tier 3 count: {np.sum(tier_assignment == 3)}")
+    tier1_count = np.sum(tier_assignment == 1)
+    tier2_count = np.sum(tier_assignment == 2)
+    tier3_count = np.sum(tier_assignment == 3)
     
-    return storage_manager
+    print(f"Tiered system initialized")
+    print(f"  Tier 1 count: {tier1_count}")
+    print(f"  Tier 2 count: {tier2_count}")
+    print(f"  Tier 3 count: {tier3_count}")
+    
+    # Calculate storage stats (will be updated after measuring actual RAM)
+    storage_stats = {
+        "tier1_count": tier1_count,
+        "tier2_count": tier2_count,
+        "tier3_count": tier3_count,
+        "total_count": len(tier_assignment)
+    }
+    
+    return storage_manager, storage_stats
 
 
 def run_query_baseline(query_embedding: np.ndarray,
@@ -345,7 +396,7 @@ def run_evaluation(query_embeddings: np.ndarray,
     Run evaluation comparing baseline vs tiered system.
     """
     print("=" * 70)
-    print("EVALUATION: Same Performance → Cost Reductions")
+    print("EVALUATION: Memory-Performance Tradeoff")
     print("=" * 70)
     print(f"Running {num_queries} queries with k={k}, threshold={threshold}")
     print()
@@ -367,9 +418,25 @@ def run_evaluation(query_embeddings: np.ndarray,
     
     # Setup baseline system
     baseline_stats = setup_baseline_system(doc_embeddings, doc_ids, redis_client)
+    baseline_ram_gb = baseline_stats["ram_gb"]
     
     # Setup tiered system
-    tiered_manager = setup_tiered_system()
+    tiered_manager, tiered_storage_stats = setup_tiered_system()
+    
+    # Calculate tiered RAM usage
+    tier_results_path = "tier_results.npz"
+    if not os.path.exists(tier_results_path):
+        tier_results_path = "python/tier_results.npz"
+    tiered_ram_gb = calculate_tiered_ram_usage(tier_results_path, doc_embeddings)
+    
+    # Calculate memory ratio
+    ram_fraction = (tiered_ram_gb / baseline_ram_gb * 100) if baseline_ram_gb > 0 else 0
+    ram_saved_pct = 100 - ram_fraction
+    
+    print(f"\nMemory Usage:")
+    print(f"  Baseline RAM: {baseline_ram_gb:.4f} GB (100% of data)")
+    print(f"  Tiered RAM:   {tiered_ram_gb:.4f} GB ({ram_fraction:.2f}% of baseline)")
+    print(f"  RAM saved:    {ram_saved_pct:.2f}%")
     
     # Initialize loggers
     baseline_logger = QueryLogger(QUERY_LOG_BASELINE)
@@ -493,13 +560,51 @@ def run_evaluation(query_embeddings: np.ndarray,
     print(f"P99 latency:   Baseline={baseline_p99:.2f}ms, Tiered={tiered_p99:.2f}ms, "
           f"Diff={tiered_p99 - baseline_p99:.2f}ms ({((tiered_p99 - baseline_p99) / baseline_p99 * 100):+.1f}%)")
     
+    # Calculate performance retention
+    # Lower latency = better performance, so we calculate performance ratio
+    # Performance retained = baseline_latency / tiered_latency (higher is better)
+    perf_retention_mean = (baseline_mean / tiered_mean * 100) if tiered_mean > 0 else 0
+    perf_retention_p95 = (baseline_p95 / tiered_p95 * 100) if tiered_p95 > 0 else 0
+    
     print("\n" + "=" * 70)
-    print("COST ANALYSIS")
+    print("MEMORY-PERFORMANCE TRADEOFF ANALYSIS")
     print("=" * 70)
-    print("Run calc_cost.py to calculate and compare costs:")
-    print(f"  Baseline: python python/calc_cost.py --log {QUERY_LOG_BASELINE} --system baseline")
-    print(f"  Tiered:   python python/calc_cost.py --log {QUERY_LOG_TIERED} --system tiered")
-    print("\nOr use compare_costs.py for side-by-side comparison.")
+    print(f"Memory Usage:")
+    print(f"  Baseline RAM:     {baseline_ram_gb:.4f} GB (100% of data)")
+    print(f"  Tiered RAM:       {tiered_ram_gb:.4f} GB ({ram_fraction:.2f}% of baseline)")
+    print(f"  RAM Reduction:    {ram_saved_pct:.2f}%")
+    print()
+    print(f"Performance Retention:")
+    print(f"  Mean latency:     {perf_retention_mean:.1f}% of baseline performance")
+    print(f"  P95 latency:     {perf_retention_p95:.1f}% of baseline performance")
+    print()
+    print(f"Efficiency Summary:")
+    print(f"  With {ram_fraction:.1f}% RAM usage, we retain {perf_retention_mean:.1f}% of baseline performance")
+    print(f"  This represents a {ram_saved_pct:.1f}% reduction in memory footprint")
+    print(f"  while maintaining {perf_retention_mean:.1f}% of the performance.")
+    
+    # Save summary to file
+    summary_path = "data/evaluation_summary.txt"
+    os.makedirs("data", exist_ok=True)
+    with open(summary_path, 'w') as f:
+        f.write("MEMORY-PERFORMANCE TRADEOFF EVALUATION\n")
+        f.write("=" * 70 + "\n\n")
+        f.write(f"Baseline System (100% RAM):\n")
+        f.write(f"  RAM Usage: {baseline_ram_gb:.4f} GB\n")
+        f.write(f"  Mean Latency: {baseline_mean:.2f} ms\n")
+        f.write(f"  P95 Latency: {baseline_p95:.2f} ms\n")
+        f.write(f"  P99 Latency: {baseline_p99:.2f} ms\n\n")
+        f.write(f"Tiered System:\n")
+        f.write(f"  RAM Usage: {tiered_ram_gb:.4f} GB ({ram_fraction:.2f}% of baseline)\n")
+        f.write(f"  Mean Latency: {tiered_mean:.2f} ms\n")
+        f.write(f"  P95 Latency: {tiered_p95:.2f} ms\n")
+        f.write(f"  P99 Latency: {tiered_p99:.2f} ms\n\n")
+        f.write(f"Results:\n")
+        f.write(f"  RAM Reduction: {ram_saved_pct:.2f}%\n")
+        f.write(f"  Performance Retention (Mean): {perf_retention_mean:.1f}%\n")
+        f.write(f"  Performance Retention (P95): {perf_retention_p95:.1f}%\n")
+    
+    print(f"\nSummary saved to {summary_path}")
     
     # Cleanup
     tiered_manager.close()
