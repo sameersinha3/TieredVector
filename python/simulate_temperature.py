@@ -10,8 +10,9 @@ from sklearn.neighbors import NearestNeighbors
 
 
 load_dotenv()
-doc_embeddings = np.load("wiki_embeddings.npy")[:10000] # Only use 10k documents for now 
+doc_embeddings = np.load("wiki_embeddings.npy")  # Load all documents
 query_embeddings = np.load("query_embeddings.npy")
+print(f"Loaded {len(doc_embeddings)} document embeddings")
 
 print("Normalizing all doc embeddings...")
 doc_norms = np.linalg.norm(doc_embeddings, axis=1, keepdims=True)

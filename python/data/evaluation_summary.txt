@@ -1,0 +1,20 @@
+TIERED STORAGE EVALUATION SUMMARY
+======================================================================
+
+Baseline System (All Tier 2):
+  Local disk: 0.0343 GB
+  Mean latency: 1.81 ms
+  P95 latency: 2.02 ms
+
+Tiered System:
+  Tier 1 (RAM): 0.0015 GB (500 docs)
+  Tier 2 (Local disk): 0.0069 GB (2000 docs)
+  Tier 3 (Remote disk): 0.0257 GB (7500 docs)
+  Mean latency: 57.04 ms
+  P95 latency: 59.39 ms
+
+Results:
+  Local disk saved: 80.00%
+  Performance retention: 3.2%
+  Baseline mean latency: 1.81 ms
+  Tiered mean latency: 57.04 ms
