@@ -371,6 +371,194 @@ class StorageManager:
         return retrieved if retrieved else None
 
 
+    def update_temperature_thresholds(self, tier1_threshold: float, tier2_threshold: float):
+        """Update temperature thresholds for tier assignment"""
+        self.tier1_threshold = tier1_threshold
+        self.tier2_threshold = tier2_threshold
+        print(f"Updated thresholds: Tier1 >= {tier1_threshold}, Tier2 >= {tier2_threshold}")
+    
+    def get_document_location(self, doc_id: int) -> tuple:
+        """Get current tier location of a document. Returns (tier, found)"""
+        doc_key = f"doc{doc_id}"
+        
+        # Check Tier 1 (Redis)
+        if self.redis_client:
+            if self.redis_client.exists(doc_key):
+                return (1, True)
+        
+        # Check Tier 2 (Local ChromaDB)
+        if self.tier2_collection:
+            try:
+                result = self.tier2_collection.get(ids=[doc_key])
+                if result['ids']:
+                    return (2, True)
+            except:
+                pass
+        
+        # Check Tier 3 (Remote ChromaDB)
+        if self.tier3_collection:
+            try:
+                result = self.tier3_collection.get(ids=[doc_key])
+                if result['ids']:
+                    return (3, True)
+            except:
+                pass
+        
+        return (None, False)
+    
+    def reallocate_document(self, doc_id: int, new_temperature: float, embedding: np.ndarray = None) -> bool:
+        """Reallocate a document to a new tier based on updated temperature"""
+        current_tier, found = self.get_document_location(doc_id)
+        
+        if not found:
+            print(f"Document {doc_id} not found in any tier. Storing in appropriate tier.")
+            if embedding is not None:
+                return self.store_document(doc_id, embedding, new_temperature)
+            else:
+                print(f"Error: Cannot store document {doc_id} without embedding")
+                return False
+        
+        new_tier = self.determine_tier(new_temperature)
+        
+        # If already in correct tier, no action needed
+        if current_tier == new_tier:
+            return True
+        
+        # Need to move document
+        # First, get the embedding if not provided
+        if embedding is None:
+            embedding = self._get_document_embedding(doc_id, current_tier)
+            if embedding is None:
+                print(f"Error: Could not retrieve embedding for document {doc_id}")
+                return False
+        
+        # Remove from current tier and add to new tier
+        success = False
+        
+        if new_tier == 1:
+            # Moving to Tier 1 (Redis)
+            if current_tier == 2:
+                self._promote_from_tier2_to_redis(doc_id, remove=True)
+            elif current_tier == 3:
+                # T3 -> T2 -> T1 (two steps)
+                self._promote_from_tier3_to_tier2(doc_id, remove=True)
+                self._promote_from_tier2_to_redis(doc_id, remove=True)
+            success = True
+        elif new_tier == 2:
+            # Moving to Tier 2 (Local ChromaDB)
+            if current_tier == 1:
+                self._demote_from_redis_to_tier2(doc_id, remove=True)
+            elif current_tier == 3:
+                self._promote_from_tier3_to_tier2(doc_id, remove=True)
+            success = True
+        elif new_tier == 3:
+            # Moving to Tier 3 (Remote ChromaDB)
+            if current_tier == 1:
+                # T1 -> T2 -> T3 (two steps)
+                self._demote_from_redis_to_tier2(doc_id, remove=True)
+                self._demote_from_tier2_to_tier3(doc_id, remove=True)
+            elif current_tier == 2:
+                self._demote_from_tier2_to_tier3(doc_id, remove=True)
+            success = True
+        
+        return success
+    
+    def _get_document_embedding(self, doc_id: int, tier: int) -> np.ndarray:
+        """Retrieve embedding from specified tier"""
+        doc_key = f"doc{doc_id}"
+        
+        try:
+            if tier == 1:
+                if self.redis_client:
+                    value = self.redis_client.get(doc_key)
+                    if value:
+                        return pickle.loads(value)
+            elif tier == 2:
+                if self.tier2_collection:
+                    result = self.tier2_collection.get(ids=[doc_key], include=["embeddings"])
+                    if result['ids']:
+                        return np.array(result['embeddings'][0], dtype=np.float32)
+            elif tier == 3:
+                if self.tier3_collection:
+                    result = self.tier3_collection.get(ids=[doc_key], include=["embeddings"])
+                    if result['ids']:
+                        return np.array(result['embeddings'][0], dtype=np.float32)
+        except Exception as e:
+            print(f"Error retrieving embedding for doc {doc_id} from tier {tier}: {e}")
+        
+        return None
+    
+    def recalculate_and_reallocate(self, temperatures: np.ndarray, doc_embeddings: np.ndarray, 
+                                   tier1_percentile: float = 95, tier2_percentile: float = 75):
+        """Recalculate tier assignments based on new temperatures and reallocate documents"""
+        print("Recalculating tier assignments...")
+        
+        # Calculate new thresholds
+        tier1_threshold = np.percentile(temperatures, tier1_percentile)
+        tier2_threshold = np.percentile(temperatures, tier2_percentile)
+        
+        # Update thresholds
+        self.update_temperature_thresholds(tier1_threshold, tier2_threshold)
+        
+        # Calculate new tier assignments
+        new_tier_assignment = np.zeros(len(temperatures), dtype=int)
+        new_tier_assignment[temperatures >= tier1_threshold] = 1
+        new_tier_assignment[(temperatures < tier1_threshold) & (temperatures >= tier2_threshold)] = 2
+        new_tier_assignment[temperatures < tier2_threshold] = 3
+        
+        print(f"New distribution: Tier1={np.sum(new_tier_assignment==1)}, "
+              f"Tier2={np.sum(new_tier_assignment==2)}, Tier3={np.sum(new_tier_assignment==3)}")
+        
+        # Reallocate documents
+        print("Reallocating documents...")
+        reallocated = 0
+        for doc_id in range(len(temperatures)):
+            new_tier = new_tier_assignment[doc_id]
+            temperature = temperatures[doc_id]
+            embedding = doc_embeddings[doc_id] if doc_id < len(doc_embeddings) else None
+            
+            if self.reallocate_document(doc_id, temperature, embedding):
+                reallocated += 1
+            
+            if (doc_id + 1) % 1000 == 0:
+                print(f"  Reallocated {doc_id + 1}/{len(temperatures)} documents...")
+        
+        print(f"Reallocation complete: {reallocated}/{len(temperatures)} documents")
+        return new_tier_assignment
+    
+    def clear_all_tiers(self):
+        """Clear all documents from all tiers (for clean setup)"""
+        print("Clearing all tiers...")
+        
+        # Clear Tier 1 (Redis)
+        if self.redis_client:
+            keys = self.redis_client.keys("doc*")
+            if keys:
+                self.redis_client.delete(*keys)
+                print(f"  Cleared {len(keys)} documents from Redis (Tier 1)")
+        
+        # Clear Tier 2 (Local ChromaDB)
+        if self.tier2_collection:
+            try:
+                all_ids = self.tier2_collection.get()['ids']
+                if all_ids:
+                    self.tier2_collection.delete(ids=all_ids)
+                    print(f"  Cleared {len(all_ids)} documents from Local ChromaDB (Tier 2)")
+            except Exception as e:
+                print(f"  Error clearing Tier 2: {e}")
+        
+        # Clear Tier 3 (Remote ChromaDB)
+        if self.tier3_collection:
+            try:
+                all_ids = self.tier3_collection.get()['ids']
+                if all_ids:
+                    self.tier3_collection.delete(ids=all_ids)
+                    print(f"  Cleared {len(all_ids)} documents from Remote ChromaDB (Tier 3)")
+            except Exception as e:
+                print(f"  Error clearing Tier 3: {e}")
+        
+        print("All tiers cleared")
+
     def close(self):
         if self.redis_client:
             self.redis_client.close()

@@ -1,0 +1,96 @@
+Loading data...
+======================================================================
+TIERED STORAGE EVALUATION
+======================================================================
+Configuration:
+  Queries: 50 (requested: 50, available: 50)
+  Results per query (k): 5
+  Similarity threshold: 0.75
+
+Loaded 10000 document embeddings
+Loaded 50 query embeddings
+
+
+Baseline storage: 0.0343 GB (all in Tier 2/local disk)
+======================================================================
+SETTING UP BASELINE SYSTEM (All in Tier 2)
+======================================================================
+Cleared existing baseline database at ./tier2_baseline_db
+Storing 10000 documents in Tier 2 (baseline)...
+  Stored 5000/10000 documents...
+  Stored 10000/10000 documents...
+Baseline setup complete: 10000 documents in Tier 2
+======================================================================
+RUNNING QUERIES: BASELINE SYSTEM (50 queries)
+======================================================================
+  Completed 10/50 queries...
+  Completed 20/50 queries...
+  Completed 30/50 queries...
+  Completed 40/50 queries...
+  Completed 50/50 queries...
+Query log saved to data/query_log_baseline.csv
+
+Baseline Performance:
+  Mean latency: 1.81 ms
+  Median latency: 1.73 ms
+  P95 latency: 2.02 ms
+  P99 latency: 6.25 ms
+======================================================================
+SETTING UP TIERED SYSTEM (3 tiers)
+======================================================================
+Tier distribution loaded:
+  Tier 1 (RAM): 500 documents
+  Tier 2 (Local disk): 2000 documents
+  Tier 3 (Remote disk): 7500 documents
+Tier 1 (Redis) connected
+Tier 2 (Local ChromaDB) initialized at ./tier2_chroma_db
+Tier 3 (Remote ChromaDB) connected (Host: 155.98.39.152)
+
+Tiered storage breakdown:
+  Tier 1 (RAM): 0.0015 GB (500 documents)
+  Tier 2 (Local disk): 0.0069 GB (2000 documents)
+  Tier 3 (Remote disk): 0.0257 GB (7500 documents)
+  Total local disk (Tier 2): 0.0069 GB
+======================================================================
+RUNNING QUERIES: TIERED SYSTEM (50 queries)
+======================================================================
+  Completed 10/50 queries...
+  Completed 20/50 queries...
+  Completed 30/50 queries...
+  Completed 40/50 queries...
+  Completed 50/50 queries...
+Query log saved to data/query_log_tiered.csv
+
+Tiered Performance:
+  Mean latency: 54.81 ms
+  Median latency: 52.56 ms
+  P95 latency: 56.94 ms
+  P99 latency: 104.38 ms
+
+======================================================================
+EVALUATION RESULTS
+======================================================================
+
+Storage Comparison:
+  Baseline (all Tier 2):     0.0343 GB local disk
+  Tiered (Tier 2 only):       0.0069 GB local disk
+  Local disk saved:           0.0275 GB (80.00%)
+  Tiered RAM overhead:        0.0015 GB (500 documents)
+  Tiered remote storage:      0.0257 GB (7500 documents)
+
+Performance Comparison:
+  Baseline mean latency:      1.81 ms
+  Tiered mean latency:        54.81 ms
+  Performance retention:      3.3%
+  Tiered is 2923.7% slower
+
+Efficiency Summary:
+  With 80.0% local disk reduction, tiered system
+  maintains 3.3% of baseline performance
+  while using 0.0015 GB RAM for hot data
+  and 0.0257 GB remote storage for cold data
+
+Summary saved to data/evaluation_summary.txt
+Storage connections closed
+
+Evaluation complete!

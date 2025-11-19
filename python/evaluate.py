@@ -68,27 +68,13 @@ def setup_baseline_system(doc_embeddings, doc_ids, tier2_path='./tier2_baseline_
     return baseline_collection, tier2_client
 
 
-def setup_tiered_system():
-    """Setup tiered system: Use existing simulate_temperature.py distribution"""
+def setup_tiered_system(doc_embeddings, recalculate_temperature=False):
+    """Setup tiered system: Use existing simulate_temperature.py distribution or recalculate on the fly"""
     print("=" * 70)
     print("SETTING UP TIERED SYSTEM (3 tiers)")
     print("=" * 70)
     
-    # Check if tier_results.npz exists
-    if not os.path.exists("tier_results.npz"):
-        print("ERROR: tier_results.npz not found. Please run simulate_temperature.py first.")
-        raise FileNotFoundError("tier_results.npz not found")
-    
-    # Load tier assignments
-    tier_data = np.load("tier_results.npz")
-    tier_assignment = tier_data['tier_assignment']
-    
-    print(f"Tier distribution loaded:")
-    print(f"  Tier 1 (RAM): {np.sum(tier_assignment == 1)} documents")
-    print(f"  Tier 2 (Local disk): {np.sum(tier_assignment == 2)} documents")
-    print(f"  Tier 3 (Remote disk): {np.sum(tier_assignment == 3)} documents")
-    
-    # Initialize StorageManager (will use existing distribution)
+    # Initialize StorageManager
     manager = StorageManager(
         tier3_host=os.getenv("VM_IP"),
         tier3_port=8000,
@@ -97,6 +83,117 @@ def setup_tiered_system():
     
     if not manager.initialize():
         raise RuntimeError("Failed to initialize tiered storage manager")
+    
+    # Clear all tiers for clean setup
+    manager.clear_all_tiers()
+    
+    if recalculate_temperature:
+        # Recalculate temperatures on the fly
+        print("Recalculating temperatures based on query access patterns...")
+        from sklearn.neighbors import NearestNeighbors
+        
+        # Load query embeddings
+        query_embeddings = np.load("query_embeddings.npy")
+        
+        # Normalize embeddings
+        doc_norms = np.linalg.norm(doc_embeddings, axis=1, keepdims=True)
+        doc_embeddings_normalized = np.divide(
+            doc_embeddings,
+            doc_norms,
+            out=np.zeros_like(doc_embeddings),
+            where=(doc_norms != 0)
+        ).astype(np.float32)
+        
+        query_norms = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
+        query_embeddings_normalized = np.divide(
+            query_embeddings,
+            query_norms,
+            out=np.zeros_like(query_embeddings),
+            where=(query_norms != 0)
+        ).astype(np.float32)
+        
+        # Calculate temperatures
+        k = 100
+        nbrs = NearestNeighbors(n_neighbors=k, metric='cosine').fit(doc_embeddings_normalized)
+        temperature = np.zeros(len(doc_embeddings_normalized))
+        
+        distances, indices = nbrs.kneighbors(query_embeddings_normalized)
+        for query_dists, query_topk in zip(distances, indices):
+            for rank, (sim, idx) in enumerate(zip(query_dists, query_topk)):
+                if sim > 0:
+                    temperature[idx] += sim
+        
+        # Recalculate and reallocate using StorageManager
+        tier_assignment = manager.recalculate_and_reallocate(
+            temperature, doc_embeddings_normalized,
+            tier1_percentile=95, tier2_percentile=75
+        )
+        
+        print(f"Tier distribution after recalculation:")
+        print(f"  Tier 1 (RAM): {np.sum(tier_assignment == 1)} documents")
+        print(f"  Tier 2 (Local disk): {np.sum(tier_assignment == 2)} documents")
+        print(f"  Tier 3 (Remote disk): {np.sum(tier_assignment == 3)} documents")
+    else:
+        # Use existing tier_results.npz
+        if not os.path.exists("tier_results.npz"):
+            print("ERROR: tier_results.npz not found. Please run simulate_temperature.py first.")
+            raise FileNotFoundError("tier_results.npz not found")
+        
+        # Load tier assignments
+        tier_data = np.load("tier_results.npz")
+        tier_assignment = tier_data['tier_assignment']
+        
+        # Update StorageManager thresholds
+        manager.update_temperature_thresholds(
+            tier_data['tier1_threshold'],
+            tier_data['tier2_threshold']
+        )
+        
+        # Populate tiers based on existing assignment
+        print("Populating tiers based on existing distribution...")
+        doc_norms = np.linalg.norm(doc_embeddings, axis=1, keepdims=True)
+        doc_embeddings_normalized = np.divide(
+            doc_embeddings,
+            doc_norms,
+            out=np.zeros_like(doc_embeddings),
+            where=(doc_norms != 0)
+        ).astype(np.float32)
+        
+        # Store documents in appropriate tiers
+        tier1_indices = np.where(tier_assignment == 1)[0]
+        tier2_indices = np.where(tier_assignment == 2)[0]
+        tier3_indices = np.where(tier_assignment == 3)[0]
+        
+        # Store Tier 1
+        for idx in tier1_indices:
+            manager._store_in_redis(idx, doc_embeddings_normalized[idx])
+        
+        # Store Tier 2
+        if len(tier2_indices) > 0:
+            ids_t2 = [f"doc{i}" for i in tier2_indices]
+            embeddings_t2 = [doc_embeddings_normalized[i].tolist() for i in tier2_indices]
+            batch_size = 500
+            for j in range(0, len(ids_t2), batch_size):
+                manager.tier2_collection.upsert(
+                    ids=ids_t2[j:j+batch_size],
+                    embeddings=embeddings_t2[j:j+batch_size]
+                )
+        
+        # Store Tier 3
+        if len(tier3_indices) > 0 and manager.tier3_collection:
+            ids_t3 = [f"doc{i}" for i in tier3_indices]
+            embeddings_t3 = [doc_embeddings_normalized[i].tolist() for i in tier3_indices]
+            batch_size = 500
+            for j in range(0, len(ids_t3), batch_size):
+                manager.tier3_collection.upsert(
+                    ids=ids_t3[j:j+batch_size],
+                    embeddings=embeddings_t3[j:j+batch_size]
+                )
+        
+        print(f"Tier distribution loaded:")
+        print(f"  Tier 1 (RAM): {np.sum(tier_assignment == 1)} documents")
+        print(f"  Tier 2 (Local disk): {np.sum(tier_assignment == 2)} documents")
+        print(f"  Tier 3 (Remote disk): {np.sum(tier_assignment == 3)} documents")
     
     return manager, tier_assignment
 
@@ -223,6 +320,7 @@ def main():
     parser.add_argument('--queries', type=int, default=50, help='Number of queries to run (default: 50, limited by available queries)')
     parser.add_argument('--k', type=int, default=5, help='Number of results per query')
     parser.add_argument('--threshold', type=float, default=0.75, help='Similarity threshold')
+    parser.add_argument('--recalculate', action='store_true', help='Recalculate temperatures on the fly instead of using tier_results.npz')
     args = parser.parse_args()
     
     # Load data first to check available queries
@@ -283,7 +381,7 @@ def main():
     print(f"  P99 latency: {baseline_stats['p99']:.2f} ms")
     
     # Setup tiered system
-    tiered_manager, tier_assignment = setup_tiered_system()
+    tiered_manager, tier_assignment = setup_tiered_system(doc_embeddings, recalculate_temperature=args.recalculate)
     
     # Calculate tiered storage
     tiered_ram_gb, tiered_tier2_gb, tiered_tier3_gb, t1_count, t2_count, t3_count = calculate_tiered_storage(
