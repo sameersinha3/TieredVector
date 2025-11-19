@@ -10,7 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 
 
 load_dotenv()
-doc_embeddings = np.load("wiki_embeddings.npy")  # Load all documents
+doc_embeddings = np.load("wiki_embeddings.npy")[:20000]  # Load all documents
 query_embeddings = np.load("query_embeddings.npy")
 print(f"Loaded {len(doc_embeddings)} document embeddings")
 
@@ -45,7 +45,8 @@ temperature = np.zeros(len(doc_embeddings_normalized))
 distances, indices = nbrs.kneighbors(query_embeddings_normalized)
 for query_dists, query_topk in zip(distances, indices):
 
-    for rank, (sim, idx) in enumerate(zip(query_dists, query_topk)):
+    for rank, (dist, idx) in enumerate(zip(query_dists, query_topk)):
+        sim = 1-dist
         if sim > 0: # Only count positive similarity
             temperature[idx] += sim # Add similarity score
 

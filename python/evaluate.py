@@ -220,36 +220,24 @@ def calculate_statistics(latencies):
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate baseline vs tiered storage system')
-    parser.add_argument('--queries', type=int, default=50, help='Number of queries to run (default: 50, limited by available queries)')
+    parser.add_argument('--queries', type=int, default=50, help='Number of queries to run')
     parser.add_argument('--k', type=int, default=5, help='Number of results per query')
     parser.add_argument('--threshold', type=float, default=0.75, help='Similarity threshold')
     args = parser.parse_args()
-    
-    # Load data first to check available queries
+
+    # Load data
     print("Loading data...")
-    doc_embeddings = np.load("wiki_embeddings.npy")
+    doc_embeddings = np.load("wiki_embeddings.npy")[:20000]
     query_embeddings = np.load("query_embeddings.npy")
     doc_ids = [f"doc{i}" for i in range(len(doc_embeddings))]
-    
+
     # Limit queries to available count
     available_queries = len(query_embeddings)
     num_queries = min(args.queries, available_queries)
     if args.queries > available_queries:
         print(f"Warning: Requested {args.queries} queries but only {available_queries} available. Using {num_queries} queries.")
-    
-    print("=" * 70)
-    print("TIERED STORAGE EVALUATION")
-    print("=" * 70)
-    print(f"Configuration:")
-    print(f"  Queries: {num_queries} (requested: {args.queries}, available: {available_queries})")
-    print(f"  Results per query (k): {args.k}")
-    print(f"  Similarity threshold: {args.threshold}")
-    print()
-    print(f"Loaded {len(doc_embeddings)} document embeddings")
-    print(f"Loaded {len(query_embeddings)} query embeddings")
-    print()
-    
-    # Normalize query embeddings
+
+    # Normalize query embeddings upfront
     query_norms = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
     query_embeddings_normalized = np.divide(
         query_embeddings,
@@ -257,130 +245,70 @@ def main():
         out=np.zeros_like(query_embeddings),
         where=(query_norms != 0)
     ).astype(np.float32)
-    
-    # Calculate storage
-    baseline_disk_gb = calculate_baseline_storage(doc_embeddings)
-    print(f"\nBaseline storage: {baseline_disk_gb:.4f} GB (all in Tier 2/local disk)")
-    
-    # Setup baseline system
-    baseline_collection, baseline_client = setup_baseline_system(
-        doc_embeddings, doc_ids, tier2_path='./tier2_baseline_db'
-    )
-    
-    # Run baseline queries
-    baseline_latencies = run_queries_baseline(
-        baseline_collection, query_embeddings_normalized,
-        k=args.k, threshold=args.threshold, num_queries=num_queries
-    )
-    
-    baseline_stats = calculate_statistics(baseline_latencies)
-    save_query_log(baseline_latencies, "query_log_baseline.csv", "baseline")
-    
-    print(f"\nBaseline Performance:")
-    print(f"  Mean latency: {baseline_stats['mean']:.2f} ms")
-    print(f"  Median latency: {baseline_stats['median']:.2f} ms")
-    print(f"  P95 latency: {baseline_stats['p95']:.2f} ms")
-    print(f"  P99 latency: {baseline_stats['p99']:.2f} ms")
-    
-    # Setup tiered system
+
+    print("=" * 70)
+    print("TIERED STORAGE EVALUATION")
+    print("=" * 70)
+    print(f"Configuration: Queries={num_queries}, k={args.k}, Threshold={args.threshold}")
+    print(f"Loaded {len(doc_embeddings)} document embeddings")
+    print(f"Loaded {len(query_embeddings)} query embeddings\n")
+
+    # --- Tiered system first ---
     tiered_manager, tier_assignment = setup_tiered_system()
-    
+
     # Calculate tiered storage
     tiered_ram_gb, tiered_tier2_gb, tiered_tier3_gb, t1_count, t2_count, t3_count = calculate_tiered_storage(
         tier_assignment, doc_embeddings
     )
-    
     print(f"\nTiered storage breakdown:")
-    print(f"  Tier 1 (RAM): {tiered_ram_gb:.4f} GB ({t1_count} documents)")
-    print(f"  Tier 2 (Local disk): {tiered_tier2_gb:.4f} GB ({t2_count} documents)")
-    print(f"  Tier 3 (Remote disk): {tiered_tier3_gb:.4f} GB ({t3_count} documents)")
-    print(f"  Total local disk (Tier 2): {tiered_tier2_gb:.4f} GB")
-    
+    print(f"  Tier 1 (RAM): {tiered_ram_gb:.4f} GB ({t1_count} docs)")
+    print(f"  Tier 2 (Local disk): {tiered_tier2_gb:.4f} GB ({t2_count} docs)")
+    print(f"  Tier 3 (Remote disk): {tiered_tier3_gb:.4f} GB ({t3_count} docs)")
+
     # Run tiered queries
     tiered_latencies = run_queries_tiered(
         tiered_manager, query_embeddings_normalized,
         k=args.k, threshold=args.threshold, num_queries=num_queries
     )
-    
     tiered_stats = calculate_statistics(tiered_latencies)
     save_query_log(tiered_latencies, "query_log_tiered.csv", "tiered")
+
+    print(f"\nTiered Performance: Mean={tiered_stats['mean']:.2f} ms, Median={tiered_stats['median']:.2f} ms, P95={tiered_stats['p95']:.2f} ms")
+    tiered_manager.summary()
     
-    print(f"\nTiered Performance:")
-    print(f"  Mean latency: {tiered_stats['mean']:.2f} ms")
-    print(f"  Median latency: {tiered_stats['median']:.2f} ms")
-    print(f"  P95 latency: {tiered_stats['p95']:.2f} ms")
-    print(f"  P99 latency: {tiered_stats['p99']:.2f} ms")
-    
-    # Calculate metrics
+    # --- Baseline system next ---
+    baseline_disk_gb = calculate_baseline_storage(doc_embeddings)
+    print(f"\nBaseline storage: {baseline_disk_gb:.4f} GB (all Tier 2/local disk)")
+
+    baseline_collection, baseline_client = setup_baseline_system(
+        doc_embeddings, doc_ids, tier2_path='./tier2_baseline_db'
+    )
+
+    baseline_latencies = run_queries_baseline(
+        baseline_collection, query_embeddings_normalized,
+        k=args.k, threshold=args.threshold, num_queries=num_queries
+    )
+    baseline_stats = calculate_statistics(baseline_latencies)
+    save_query_log(baseline_latencies, "query_log_baseline.csv", "baseline")
+
+    print(f"\nBaseline Performance: Mean={baseline_stats['mean']:.2f} ms, Median={baseline_stats['median']:.2f} ms, P95={baseline_stats['p95']:.2f} ms")
+
+    # --- Compare storage and performance ---
     local_disk_saved_gb = baseline_disk_gb - tiered_tier2_gb
     local_disk_saved_pct = (local_disk_saved_gb / baseline_disk_gb * 100) if baseline_disk_gb > 0 else 0
-    
-    # Performance retention: how much of baseline performance is retained
-    # Lower latency = better, so retention = baseline_latency / tiered_latency * 100
-    # > 100% means tiered is faster, < 100% means tiered is slower
     performance_retention = (baseline_stats['mean'] / tiered_stats['mean'] * 100) if tiered_stats['mean'] > 0 else 0
-    
-    # Print results
-    print("\n" + "=" * 70)
+
+    print("\n" + "="*70)
     print("EVALUATION RESULTS")
-    print("=" * 70)
-    
-    print(f"\nStorage Comparison:")
-    print(f"  Baseline (all Tier 2):     {baseline_disk_gb:.4f} GB local disk")
-    print(f"  Tiered (Tier 2 only):       {tiered_tier2_gb:.4f} GB local disk")
-    print(f"  Local disk saved:           {local_disk_saved_gb:.4f} GB ({local_disk_saved_pct:.2f}%)")
-    print(f"  Tiered RAM overhead:        {tiered_ram_gb:.4f} GB ({t1_count} documents)")
-    print(f"  Tiered remote storage:      {tiered_tier3_gb:.4f} GB ({t3_count} documents)")
-    
-    print(f"\nPerformance Comparison:")
-    print(f"  Baseline mean latency:      {baseline_stats['mean']:.2f} ms")
-    print(f"  Tiered mean latency:        {tiered_stats['mean']:.2f} ms")
-    print(f"  Performance retention:      {performance_retention:.1f}%")
-    if tiered_stats['mean'] < baseline_stats['mean']:
-        improvement = ((baseline_stats['mean'] - tiered_stats['mean']) / baseline_stats['mean'] * 100)
-        print(f"  Tiered is {improvement:.1f}% faster")
-    else:
-        degradation = ((tiered_stats['mean'] - baseline_stats['mean']) / baseline_stats['mean'] * 100)
-        print(f"  Tiered is {degradation:.1f}% slower")
-    
-    print(f"\nEfficiency Summary:")
-    print(f"  With {local_disk_saved_pct:.1f}% local disk reduction, tiered system")
-    if tiered_stats['mean'] < baseline_stats['mean']:
-        print(f"  achieves {100-performance_retention:.1f}% performance improvement")
-    else:
-        print(f"  maintains {performance_retention:.1f}% of baseline performance")
-    print(f"  while using {tiered_ram_gb:.4f} GB RAM for hot data")
-    print(f"  and {tiered_tier3_gb:.4f} GB remote storage for cold data")
-    
-    # Save summary
-    os.makedirs("data", exist_ok=True)
-    summary_path = "data/evaluation_summary.txt"
-    with open(summary_path, 'w') as f:
-        f.write("TIERED STORAGE EVALUATION SUMMARY\n")
-        f.write("=" * 70 + "\n\n")
-        f.write(f"Baseline System (All Tier 2):\n")
-        f.write(f"  Local disk: {baseline_disk_gb:.4f} GB\n")
-        f.write(f"  Mean latency: {baseline_stats['mean']:.2f} ms\n")
-        f.write(f"  P95 latency: {baseline_stats['p95']:.2f} ms\n\n")
-        f.write(f"Tiered System:\n")
-        f.write(f"  Tier 1 (RAM): {tiered_ram_gb:.4f} GB ({t1_count} docs)\n")
-        f.write(f"  Tier 2 (Local disk): {tiered_tier2_gb:.4f} GB ({t2_count} docs)\n")
-        f.write(f"  Tier 3 (Remote disk): {tiered_tier3_gb:.4f} GB ({t3_count} docs)\n")
-        f.write(f"  Mean latency: {tiered_stats['mean']:.2f} ms\n")
-        f.write(f"  P95 latency: {tiered_stats['p95']:.2f} ms\n\n")
-        f.write(f"Results:\n")
-        f.write(f"  Local disk saved: {local_disk_saved_pct:.2f}%\n")
-        f.write(f"  Performance retention: {performance_retention:.1f}%\n")
-        f.write(f"  Baseline mean latency: {baseline_stats['mean']:.2f} ms\n")
-        f.write(f"  Tiered mean latency: {tiered_stats['mean']:.2f} ms\n")
-    
-    print(f"\nSummary saved to {summary_path}")
-    
+    print("="*70)
+    print(f"Storage: Baseline={baseline_disk_gb:.4f} GB, Tiered Tier2={tiered_tier2_gb:.4f} GB, Saved={local_disk_saved_gb:.4f} GB ({local_disk_saved_pct:.2f}%)")
+    print(f"Performance: Baseline mean={baseline_stats['mean']:.2f} ms, Tiered mean={tiered_stats['mean']:.2f} ms, Retention={performance_retention:.1f}%")
+
     # Cleanup
     baseline_client.delete_collection("baseline_vectors")
     tiered_manager.close()
-    
     print("\nEvaluation complete!")
+
 
 
 if __name__ == "__main__":

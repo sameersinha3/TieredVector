@@ -1,0 +1,6 @@
+# Simple config for scoring system
+
+TIER1_THRESHOLD = 0.7
+TIER2_THRESHOLD = 0.3
+MAX_MIGRATIONS = 20
+ENABLE_SCORING = True
