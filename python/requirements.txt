@@ -1,0 +1,7 @@
+numpy
+redis
+plyvel
+google-cloud-storage
+sentence-transformers
+scikit-learn
+datasets
