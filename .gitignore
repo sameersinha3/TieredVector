@@ -5,6 +5,6 @@ python/__pycache__
 python/tier2_chroma_db
 *.rdb
 *.mdb
-python/tier_results.npz
+*.npz
 .env
 secret/

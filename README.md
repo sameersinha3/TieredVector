@@ -13,13 +13,13 @@ curl ifconfig.me
 VM_IP=XXX.XX.XXX.X
 ```
 
-Finally, run the following to install ChromaDB and run it (the specified path should use the saved ChromaDB store that was the result of simulate_temperature.py. I WILL CONFIRM THIS TOMORROW TO SEE IF IT PERSISTS)
+Finally, run the following to install ChromaDB and run it (the specified path should use the saved ChromaDB store that was the result of simulate_temperature.py. I WILL CONFIRM THIS TOMORROW TO SEE IF IT PERSISTS) - note that the path is /users/sameers5/chroma_store which should be visible to all users. But will double check.
 ```bash
 sudo apt update
 sudo apt install python3-pip
 pip install chromadb
-export PATH="$PATH:/users/sameers5/.local/bin"
-echo 'export PATH="$PATH:/users/sameers5/.local/bin"' >> ~/.bashrc
+export PATH="$PATH:/users/<YOURNAME>/.local/bin"
+echo 'export PATH="$PATH:/users/<YOURNAME>/.local/bin"' >> ~/.bashrc
 source ~/.bashrc
 chroma run --host 0.0.0.0 --port 8000 --path /users/sameers5/chroma_store
 ```
