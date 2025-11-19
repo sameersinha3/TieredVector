@@ -41,6 +41,7 @@ class StorageManager:
         self.tracker = None
         self.scorer = None
         self.orchestrator = None
+        self.accesses = {1: 0, 2: 0, 3: 0}
 
 
     def initialize(self) -> bool:
@@ -312,6 +313,7 @@ class StorageManager:
                     if len(retrieved) < k and did not in retrieved_ids:
                         retrieved.append({"id": did, "score": s, "source": "redis (T1)"})
                         retrieved_ids.add(did)
+                        self.accesses[1] += 1
 
                 if len(retrieved) >= k:
                     return retrieved
@@ -343,6 +345,7 @@ class StorageManager:
                         if len(retrieved) < k:
                             retrieved.append({"id": doc_id, "score": score, "source": "chroma_local (T2)"})
                             retrieved_ids.add(doc_id)
+                            self.accesses[2] += 1
             
             except Exception as e:
                 print(f"[ChromaDB T2] retrieval error: {e}")
@@ -374,6 +377,7 @@ class StorageManager:
                         if len(retrieved) < k:
                             retrieved.append({"id": doc_id, "score": score, "source": "chroma_remote (T3)"})
                             retrieved_ids.add(doc_id)
+                            self.accesses[3] += 1
                         
             except Exception as e:
                 print(f"[ChromaDB T3] retrieval error: {e}")
@@ -404,6 +408,12 @@ class StorageManager:
         if self.redis_client:
             self.redis_client.close()
         print("Storage connections closed")
+    
+    def summary(self):
+        print("Access Patterns")
+        print(f"Tier 1 accesses: {self.accesses[1]}")
+        print(f"Tier 2 accesses: {self.accesses[2]}")
+        print(f"Tier 3 accesses: {self.accesses[3]}")
 
 
     def _initialize_scoring(self):
