@@ -3,13 +3,18 @@ import pickle
 import numpy as np
 import chromadb
 import os
+from access_tracker import AccessTracker
+from document_scorer import DocumentScorer
+from tier_orchestrator import TierOrchestrator
+import scoring_config as config
 
 class StorageManager:
     def __init__(self, redis_host='localhost', redis_port=6379, 
                  tier2_path='./tier2_chroma_db',           # For Local Tier 2
                  tier3_host=os.getenv("VM_IP"),          # For Remote Tier 3
                  tier3_port=8000,
-                 tier3_collection='cold_vectors'):
+                 tier3_collection='cold_vectors',
+                 enable_scoring=config.ENABLE_SCORING):
         
         # --- Tier 1 (Redis) ---
         self.redis_host = redis_host
@@ -31,6 +36,11 @@ class StorageManager:
         # --- Temperature Thresholds ---
         self.tier1_threshold = 0.9
         self.tier2_threshold = 0.7
+
+        self.enable_scoring = enable_scoring
+        self.tracker = None
+        self.scorer = None
+        self.orchestrator = None
 
 
     def initialize(self) -> bool:
@@ -72,6 +82,15 @@ class StorageManager:
             print(f"Failed to initialize Tier 3 ChromaDB: {e}")
             self.tier3_client = None # Allow app to run without remote DB
 
+        if self.enable_scoring:
+            try:
+                self._initialize_scoring()
+                if self.scorer:
+                    assignments = self._scan_tier_assignments()
+                    self.scorer.bulk_update_tiers(assignments)
+            except Exception as e:
+                print(f"Error initializing scoring: {e}")
+
         return True
 
 
@@ -102,7 +121,6 @@ class StorageManager:
 
 
     def _store_in_redis(self, doc_id: int, embedding: np.ndarray) -> bool:
-        # (This code is unchanged)
         try:
             key = f"doc{doc_id}"
             value = pickle.dumps(embedding)
@@ -112,8 +130,7 @@ class StorageManager:
             print(f"Redis store error for doc {doc_id}: {e}")
             return False
 
-    
-    # --- NEW: Replaces _store_in_lmdb ---
+        # --- NEW: Replaces _store_in_lmdb ---
     def _store_in_tier2_chroma(self, doc_id: int, embedding: np.ndarray) -> bool:
         """Stores a single document in Tier 2 (Local ChromaDB)."""
         if not self.tier2_collection:
@@ -130,8 +147,7 @@ class StorageManager:
             print(f"Tier 2 ChromaDB store error for doc {doc_id}: {e}")
             return False
 
-            
-    # --- RENAMED: Was _store_in_chroma ---
+                # --- RENAMED: Was _store_in_chroma ---
     def _store_in_tier3_chroma(self, doc_id: int, embedding: np.ndarray) -> bool:
         """Stores a single document in Tier 3 (Remote ChromaDB)."""
         if not self.tier3_collection:
@@ -149,8 +165,6 @@ class StorageManager:
             return False
     
     
-    # --- ALL PROMOTION/DEMOTION FUNCTIONS RE-WRITTEN ---
-
     def _promote_from_tier3_to_tier2(self, doc_id, remove=True):
         """Fetches a doc from Tier 3 (Remote) and puts it in Tier 2 (Local)."""
         if not self.tier3_collection or not self.tier2_collection:
@@ -286,7 +300,6 @@ class StorageManager:
                     # Load the stored NORMALIZED vector
                     emb_norm = pickle.loads(self.redis_client.get(key))
                     
-                    # *** THIS IS THE CHANGE ***
                     # Dot product of two normalized vectors IS the cosine similarity
                     score = np.dot(query_norm, emb_norm)
                     
@@ -310,7 +323,6 @@ class StorageManager:
         remaining = k - len(retrieved)
         if remaining > 0 and self.tier2_collection:
             try:
-                # *** THIS IS THE CHANGE ***
                 # Query using the normalized query list
                 results = self.tier2_collection.query(
                     query_embeddings=[query_list],
@@ -324,7 +336,6 @@ class StorageManager:
                     if doc_id in retrieved_ids:
                         continue
                     
-                    # *** THIS IS THE CHANGE ***
                     # Score = 1.0 - Cosine Distance
                     score = 1.0 - dist 
 
@@ -344,7 +355,6 @@ class StorageManager:
         remaining = k - len(retrieved) # Re-check remaining k
         if remaining > 0 and self.tier3_collection:
             try:
-                # *** THIS IS THE CHANGE ***
                 # Query using the normalized query list
                 results = self.tier3_collection.query(
                     query_embeddings=[query_list],
@@ -368,6 +378,25 @@ class StorageManager:
             except Exception as e:
                 print(f"[ChromaDB T3] retrieval error: {e}")
 
+        if self.enable_scoring and self.tracker and retrieved:
+            try:
+                for doc in retrieved:
+                    doc_id = doc['id']
+                    if isinstance(doc_id, bytes):
+                        doc_id = doc_id.decode()
+                    self.tracker.record_access(doc_id)
+                    if self.scorer:
+                        src = doc.get('source', '')
+                        if 'T1' in src:
+                            tier = 1
+                        elif 'T2' in src:
+                            tier = 2
+                        else:
+                            tier = 3
+                        self.scorer.update_document_tier(doc_id, tier)
+            except Exception as e:
+                print(f"Error tracking access: {e}")
+
         return retrieved if retrieved else None
 
 
@@ -375,3 +404,65 @@ class StorageManager:
         if self.redis_client:
             self.redis_client.close()
         print("Storage connections closed")
+
+
+    def _initialize_scoring(self):
+        try:
+            self.tracker = AccessTracker()
+            self.scorer = DocumentScorer(self.tracker)
+            self.orchestrator = TierOrchestrator(self, self.tracker, self.scorer)
+        except Exception as e:
+            print(f"Failed to initialize scoring system: {e}")
+            self.enable_scoring = False
+            self.tracker = None
+            self.scorer = None
+            self.orchestrator = None
+
+
+    def _scan_tier_assignments(self) -> dict:
+        assignments = {}
+        try:
+            if self.redis_client:
+                keys = self.redis_client.keys("doc*")
+                for key in keys:
+                    doc_id = key.decode()
+                    assignments[doc_id] = 1
+            if self.tier2_collection:
+                result = self.tier2_collection.get()
+                for doc_id in result['ids']:
+                    assignments[doc_id] = 2
+            if self.tier3_collection:
+                result = self.tier3_collection.get()
+                for doc_id in result['ids']:
+                    assignments[doc_id] = 3
+        except Exception as e:
+            print(f"Error scanning tier assignments: {e}")
+        return assignments
+
+
+    def get_scoring_stats(self) -> dict:
+        stats = {'scoring_enabled': self.enable_scoring}
+        if not self.enable_scoring:
+            return stats
+        if self.tracker:
+            top_docs = self.tracker.get_top_accessed(10)
+            stats['top_accessed'] = [
+                {
+                    'doc_id': doc_id,
+                    'score': score,
+                    'stats': self.tracker.get_access_stats(doc_id)
+                }
+                for doc_id, score in top_docs
+            ]
+        if self.scorer:
+            stats['tier_distribution'] = self.scorer.get_tier_distribution()
+            stats['migration_stats'] = self.scorer.get_migration_stats(24)
+        if self.orchestrator:
+            stats['orchestrator_status'] = self.orchestrator.get_status()
+        return stats
+
+
+    def force_migration(self, doc_id: str, target_tier: int) -> bool:
+        if self.orchestrator:
+            return self.orchestrator.force_migration(doc_id, target_tier)
+        return False
