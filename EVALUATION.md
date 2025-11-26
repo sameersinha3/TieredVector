@@ -11,7 +11,11 @@ cd python
 python simulate_temperature.py
 
 # Step 2: Run evaluation
-python evaluate.py --queries 50 --k 5 --threshold 0.75
+# Local baseline (default): All documents in Tier 2/local disk
+python evaluate.py --queries 50 --k 5 --threshold 0.75 --baseline-type local
+
+# Cloud baseline: All documents in Tier 3/cloud storage
+python evaluate.py --queries 50 --k 5 --threshold 0.75 --baseline-type cloud
 
 # Step 3: Analyze results
 python analyze_results.py --log data/query_log_baseline.csv --system baseline
@@ -45,20 +49,26 @@ python simulate_temperature.py
 ### Step 2: Run Evaluation
 
 ```bash
-python evaluate.py [--queries N] [--k K] [--threshold T]
+python evaluate.py [--queries N] [--k K] [--threshold T] [--baseline-type TYPE]
 ```
 
 **Parameters:**
 - `--queries`: Number of queries to run (default: 50, limited by available queries in query_embeddings.npy)
 - `--k`: Number of results per query (default: 5)
 - `--threshold`: Similarity threshold (default: 0.75)
+- `--baseline-type`: Baseline type - `local` (all in Tier 2/local disk) or `cloud` (all in Tier 3/cloud storage). Default: `local`
 
 **What it does:**
 
 1. **Setup Baseline System:**
-   - Stores all documents in Tier 2 (Local ChromaDB)
-   - Clears Tier 1 (Redis) - baseline doesn't use RAM
-   - Creates separate baseline database at `./tier2_baseline_db`
+   - **Local baseline** (`--baseline-type local`, default):
+     - Stores all documents in Tier 2 (Local ChromaDB)
+     - Clears Tier 1 (Redis) - baseline doesn't use RAM
+     - Creates separate baseline database at `./tier2_baseline_db`
+   - **Cloud baseline** (`--baseline-type cloud`):
+     - Stores all documents in Tier 3 (Remote ChromaDB on CloudLab)
+     - Clears Tier 1 (Redis) and Tier 2 (local) - baseline uses only cloud storage
+     - Creates separate baseline collection `baseline_cloud_vectors` on remote ChromaDB
 
 2. **Setup Tiered System:**
    - Uses existing distribution from `simulate_temperature.py`
@@ -76,7 +86,7 @@ python evaluate.py [--queries N] [--k K] [--threshold T]
    - Performance comparison
 
 **Output Files:**
-- `data/query_log_baseline.csv` - Baseline system query metrics
+- `data/query_log_baseline_local.csv` or `data/query_log_baseline_cloud.csv` - Baseline system query metrics (depends on baseline type)
 - `data/query_log_tiered.csv` - Tiered system query metrics
 - `data/evaluation_summary.txt` - Summary of results
 
@@ -90,7 +100,11 @@ python analyze_results.py --log <log_file> --system <baseline|tiered>
 
 **Example:**
 ```bash
-python analyze_results.py --log data/query_log_baseline.csv --system baseline
+# For local baseline
+python analyze_results.py --log data/query_log_baseline_local.csv --system baseline
+# For cloud baseline
+python analyze_results.py --log data/query_log_baseline_cloud.csv --system baseline
+# For tiered system
 python analyze_results.py --log data/query_log_tiered.csv --system tiered
 ```
 
@@ -107,14 +121,23 @@ python compare_results.py
 
 ## Metrics Explained
 
-### Local Disk Savings
+### Storage Savings
 
+**Local Baseline (`--baseline-type local`):**
 ```
 Local disk saved = (Baseline Tier 2 - Tiered Tier 2) / Baseline Tier 2 × 100%
 ```
 
 **Example:** If baseline uses 0.0300 GB and tiered uses 0.0060 GB:
 - Local disk saved = (0.0300 - 0.0060) / 0.0300 × 100% = 80%
+
+**Cloud Baseline (`--baseline-type cloud`):**
+```
+Cloud storage saved = (Baseline Tier 3 - Tiered Tier 3) / Baseline Tier 3 × 100%
+```
+
+**Example:** If baseline uses 0.0300 GB and tiered uses 0.0075 GB:
+- Cloud storage saved = (0.0300 - 0.0075) / 0.0300 × 100% = 75%
 
 ### RAM Overhead
 
