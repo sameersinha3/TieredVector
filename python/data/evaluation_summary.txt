@@ -1,122 +1,40 @@
-TIERED STORAGE EVALUATION SUMMARY
+TIERED STORAGE EVALUATION SUMMARY - MULTI-THRESHOLD ANALYSIS
 ======================================================================
 
-Baseline System (All Tier 2):
-  Local disk: 0.0343 GB
-  Mean latency: 1.95 ms
-  P95 latency: 2.20 ms
+Baseline System (All Tier 3 (Cloud Storage)):
+  Cloud storage: 0.0343 GB
 
 Tiered System:
   Tier 1 (RAM): 0.0015 GB (500 docs)
   Tier 2 (Local disk): 0.0069 GB (2000 docs)
   Tier 3 (Remote disk): 0.0257 GB (7500 docs)
-  Mean latency: 21.93 ms
-  P95 latency: 23.28 ms
+  Cloud storage saved: 25.00%
 
-Results:
-  Local disk saved: 80.00%
-  Performance retention: 8.9%
-  Baseline mean latency: 1.95 ms
-  Tiered mean latency: 21.93 ms
+======================================================================
+PERFORMANCE BY THRESHOLD
+======================================================================
 
-Tier Access Statistics:
-  Tier 1 (RAM) hits: 2500 (100.0%)
-  Tier 2 (Local disk) hits: 0 (0.0%)
-  Tier 3 (Remote disk) hits: 0 (0.0%)
+Threshold: 0.6
+  Baseline: Mean=53.96ms, P95=60.05ms
+  Tiered:   Mean=27.65ms, P95=39.84ms
+  Performance retention: 195.1%
+  Average results per query: 5.00
+  Average similarity score: 0.8462
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
 
-Sample Queries (First 5):
+Threshold: 0.75
+  Baseline: Mean=53.28ms, P95=57.00ms
+  Tiered:   Mean=27.09ms, P95=32.03ms
+  Performance retention: 196.7%
+  Average results per query: 5.00
+  Average similarity score: 0.8462
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
 
-  Query 1: when is the last episode of season 8 of the walking dead
-    Latency: 26.42 ms
-    Retrieved documents:
-      1. doc5033 - Deaths in 2022
-         Score: 0.8503 | Source: redis (T1)
-         Text: The following is a list of deaths that happened in 2022. For deaths that should be noted before the month that the world is in, please see "Months". Names under each date are noted in the order of the...
-      2. doc3113 - Roe v. Wade
-         Score: 0.8469 | Source: redis (T1)
-         Text: During a speech at the White House, given shortly after the opinion was released, US President Joe Biden stated in part:
-      3. doc4688 - Jesus
-         Score: 0.8425 | Source: redis (T1)
-         Text: ""For God so loved the world, that he gave his only Son, that whoever believes in him should not perish but have eternal life." John's Gospel, 3:16."
-      4. doc7585 - Seven deadly sins
-         Score: 0.8391 | Source: redis (T1)
-         Text: People notice that some of these sins are connected. They have attempted to set down an order to them. Each of these cardinal sins are ways of not loving God and not loving others as much as oneself.
-      5. doc7584 - Seven deadly sins
-         Score: 0.8391 | Source: redis (T1)
-         Text: Ranked in order of least evil to most evil like in Dante's "Divine Comedy", the seven deadly sins are:
+Threshold: 0.9
+  Baseline: Mean=52.89ms, P95=56.44ms
+  Tiered:   Mean=82.23ms, P95=85.53ms
+  Performance retention: 64.3%
+  Average results per query: 0.00
+  Average similarity score: 0.0000
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
 
-  Query 2: in greek mythology who was the goddess of spring growth
-    Latency: 23.59 ms
-    Retrieved documents:
-      1. doc8934 - Lists of deities
-         Score: 0.8505 | Source: redis (T1)
-         Text: This is a list of deities in different polytheistic religions, cultures and mythologies of the world.
-      2. doc8935 - Lists of deities
-         Score: 0.8475 | Source: redis (T1)
-         Text: This list includes Etruscan, Greek, Roman, Norse and Meitei versions of similar gods and goddesses. The table is ordered by the Greek god's name.
-      3. doc4674 - Jesus
-         Score: 0.8378 | Source: redis (T1)
-         Text: Most Christians celebrate the time that the Gospels say he died and was raised from the dead as the holiday of Easter.
-      4. doc6690 - Geisha
-         Score: 0.8351 | Source: redis (T1)
-         Text: By about 1700, female geisha had become much more popular than male geisha. A few years later, almost all geisha were women.
-      5. doc128 - Global warming
-         Score: 0.8329 | Source: redis (T1)
-         Text: These and the other cities have either started trying to deal with rising sea level and related storm surge, or are discussing this, according to .
-
-  Query 3: benefits of colonial life for single celled organisms
-    Latency: 23.28 ms
-    Retrieved documents:
-      1. doc2762 - Marxism
-         Score: 0.8699 | Source: redis (T1)
-         Text: Not all communists, socialists, or Marxists agree on this question. However, many strong supporters of Marxism agree that:
-      2. doc9720 - Sustainable development
-         Score: 0.8669 | Source: redis (T1)
-         Text: Sustainable development is a way for people to use the things they need so there will not be none left. It means building things without harming the natural world.
-      3. doc9725 - Sustainable development
-         Score: 0.8663 | Source: redis (T1)
-         Text: At the core of this idea is the matter of meeting people's needs – for a home, for a decent job, for education for their children, for good health care, and for a safe and healthy neighbourhood to liv...
-      4. doc4346 - Pollution
-         Score: 0.8663 | Source: redis (T1)
-         Text: Air pollution causes global warming and acid rain. This makes it difficult for some living things to survive.
-      5. doc7315 - South Africa
-         Score: 0.8647 | Source: redis (T1)
-         Text: South Africa is the only country of Africa with a significant ethnic European population and influence
-
-  Query 4: how many season of the man in the high castle
-    Latency: 23.70 ms
-    Retrieved documents:
-      1. doc6269 - Donald Trump
-         Score: 0.8344 | Source: redis (T1)
-         Text: His actions towards the Capitol riots, led to the U.S. House to impeach Trump for a second time, making him the only President to be impeached twice.
-      2. doc6242 - Donald Trump
-         Score: 0.8312 | Source: redis (T1)
-         Text: The following people held other important jobs in the executive branch. They are also selected by the president.
-      3. doc6241 - Donald Trump
-         Score: 0.8289 | Source: redis (T1)
-         Text: The following people were part of Donald Trump's cabinet. They are the most senior officers of the executive branch.
-      4. doc6270 - Donald Trump
-         Score: 0.8261 | Source: redis (T1)
-         Text: During his presidency, Trump appointed three justices to the Supreme Court: Neil Gorsuch, Brett Kavanaugh, and Amy Coney Barrett.
-      5. doc3113 - Roe v. Wade
-         Score: 0.8228 | Source: redis (T1)
-         Text: During a speech at the White House, given shortly after the opinion was released, US President Joe Biden stated in part:
-
-  Query 5: who was the first ministry head of state in nigeria
-    Latency: 22.16 ms
-    Retrieved documents:
-      1. doc3381 - Boris Johnson
-         Score: 0.8532 | Source: redis (T1)
-         Text: Johnson resigned as Foreign Secretary in July 2018. This was after Prime Minister Theresa May's Brexit agreements failed.
-      2. doc591 - Nelson Mandela
-         Score: 0.8514 | Source: redis (T1)
-         Text: He won the Nobel Peace Prize for his leadership for his anti-apartheid activism in 1993. After receiving the prize he said:
-      3. doc799 - Politics
-         Score: 0.8507 | Source: redis (T1)
-         Text: The government can also control people and what happens in a country in other ways besides making laws.
-      4. doc7049 - Africa
-         Score: 0.8507 | Source: redis (T1)
-         Text: The history of Africa begins with the first modern human beings and continues to its present difficult state as a politically developing continent.
-      5. doc835 - Palm tree
-         Score: 0.8507 | Source: redis (T1)
-         Text: At the birth of a child in Akwa Ibom State, Nigeria, a coconut palm was planted to count the age of the child.

@@ -343,10 +343,18 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate baseline vs tiered storage system')
     parser.add_argument('--queries', type=int, default=50, help='Number of queries to run (default: 50, limited by available queries)')
     parser.add_argument('--k', type=int, default=5, help='Number of results per query')
-    parser.add_argument('--threshold', type=float, default=0.75, help='Similarity threshold')
-    parser.add_argument('--baseline-type', type=str, default='local', choices=['local', 'cloud'],
+    parser.add_argument('--threshold', type=float, default=0.75, help='Similarity threshold (used if --multi-threshold not set)')
+    parser.add_argument('--baseline-type', type=str, default='cloud', choices=['local', 'cloud'],
                        help='Baseline type: "local" (all in Tier 2/local disk) or "cloud" (all in Tier 3/cloud storage)')
+    parser.add_argument('--multi-threshold', action='store_true', 
+                       help='Run evaluation with multiple thresholds (0.6, 0.75, 0.9)')
     args = parser.parse_args()
+    
+    # Determine thresholds to test
+    if args.multi_threshold:
+        thresholds = [0.6, 0.75, 0.9]
+    else:
+        thresholds = [args.threshold]
     
     # Load data first to check available queries
     print("Loading data...")
@@ -403,7 +411,10 @@ def main():
     print(f"  Baseline type: {args.baseline_type.upper()}")
     print(f"  Queries: {num_queries} (requested: {args.queries}, available: {available_queries})")
     print(f"  Results per query (k): {args.k}")
-    print(f"  Similarity threshold: {args.threshold}")
+    if args.multi_threshold:
+        print(f"  Similarity thresholds: {thresholds}")
+    else:
+        print(f"  Similarity threshold: {args.threshold}")
     print()
     print(f"Loaded {len(doc_embeddings)} document embeddings")
     print(f"Loaded {len(query_embeddings)} query embeddings")
@@ -418,14 +429,14 @@ def main():
         where=(query_norms != 0)
     ).astype(np.float32)
     
-    # Calculate storage
+    # Calculate storage (same for all thresholds)
     baseline_local_gb, baseline_remote_gb = calculate_baseline_storage(doc_embeddings, args.baseline_type)
     if args.baseline_type == 'local':
         print(f"\nBaseline storage: {baseline_local_gb:.4f} GB (all in Tier 2/local disk)")
     else:
         print(f"\nBaseline storage: {baseline_remote_gb:.4f} GB (all in Tier 3/cloud storage)")
     
-    # Setup baseline system
+    # Setup baseline system (once, reused for all thresholds)
     if args.baseline_type == 'local':
         baseline_collection, baseline_client = setup_baseline_system(
             doc_embeddings, doc_ids, tier2_path='./tier2_baseline_db'
@@ -435,28 +446,10 @@ def main():
             doc_embeddings, doc_ids
         )
     
-    # Run baseline queries
-    baseline_latencies = run_queries_baseline(
-        baseline_collection, query_embeddings_normalized,
-        k=args.k, threshold=args.threshold, num_queries=num_queries,
-        baseline_type=args.baseline_type
-    )
-    
-    baseline_stats = calculate_statistics(baseline_latencies)
-    baseline_log_name = f"query_log_baseline_{args.baseline_type}.csv"
-    save_query_log(baseline_latencies, baseline_log_name, f"baseline-{args.baseline_type}")
-    
-    baseline_name = "LOCAL DISK" if args.baseline_type == 'local' else "CLOUD STORAGE"
-    print(f"\nBaseline Performance ({baseline_name}):")
-    print(f"  Mean latency: {baseline_stats['mean']:.2f} ms")
-    print(f"  Median latency: {baseline_stats['median']:.2f} ms")
-    print(f"  P95 latency: {baseline_stats['p95']:.2f} ms")
-    print(f"  P99 latency: {baseline_stats['p99']:.2f} ms")
-    
-    # Setup tiered system
+    # Setup tiered system (once, reused for all thresholds)
     tiered_manager, tier_assignment = setup_tiered_system(doc_embeddings)
     
-    # Calculate tiered storage
+    # Calculate tiered storage (same for all thresholds)
     tiered_ram_gb, tiered_tier2_gb, tiered_tier3_gb, t1_count, t2_count, t3_count = calculate_tiered_storage(
         tier_assignment, doc_embeddings
     )
@@ -467,82 +460,112 @@ def main():
     print(f"  Tier 3 (Remote disk): {tiered_tier3_gb:.4f} GB ({t3_count} documents)")
     print(f"  Total local disk (Tier 2): {tiered_tier2_gb:.4f} GB")
     
-    # Run tiered queries
-    tiered_latencies, tier_hits, query_results = run_queries_tiered(
-        tiered_manager, query_embeddings_normalized,
-        k=args.k, threshold=args.threshold, num_queries=num_queries,
-        query_texts=query_texts
-    )
-    
-    # Enrich query results with document metadata
-    for qr in query_results:
-        for result in qr['results']:
-            doc_id = result.get('id', '')
-            if doc_id in doc_metadata:
-                result['title'] = doc_metadata[doc_id]['title']
-                result['text_snippet'] = doc_metadata[doc_id]['text']
-    
-    tiered_stats = calculate_statistics(tiered_latencies)
-    save_query_log(tiered_latencies, "query_log_tiered.csv", "tiered")
-    
-    print(f"\nTiered Performance:")
-    print(f"  Mean latency: {tiered_stats['mean']:.2f} ms")
-    print(f"  Median latency: {tiered_stats['median']:.2f} ms")
-    print(f"  P95 latency: {tiered_stats['p95']:.2f} ms")
-    print(f"  P99 latency: {tiered_stats['p99']:.2f} ms")
-    
-    # Print tier access statistics
-    total_hits = sum(tier_hits.values())
-    print(f"\nTier Access Statistics:")
-    if total_hits > 0:
-        print(f"  Tier 1 (RAM) hits:        {tier_hits['T1']} ({tier_hits['T1']/total_hits*100:.1f}%)")
-        print(f"  Tier 2 (Local disk) hits: {tier_hits['T2']} ({tier_hits['T2']/total_hits*100:.1f}%)")
-        print(f"  Tier 3 (Remote disk) hits: {tier_hits['T3']} ({tier_hits['T3']/total_hits*100:.1f}%)")
-    else:
-        print(f"  No tier hits recorded")
-    
-    # Print first 5 queries with results
-    print(f"\n" + "=" * 70)
-    print("SAMPLE QUERIES AND RETRIEVED DOCUMENTS (First 5)")
-    print("=" * 70)
-    for qr in query_results:
-        print(f"\nQuery {qr['query_id']+1}: {qr['query_text']}")
-        print(f"  Latency: {qr['latency_ms']:.2f} ms")
-        print(f"  Retrieved {len(qr['results'])} documents:")
-        for idx, result in enumerate(qr['results'][:5], 1):  # Show top 5 results
-            doc_id = result.get('id', 'N/A')
-            score = result.get('score', 0)
-            source = result.get('source', 'N/A')
-            title = result.get('title', 'N/A')
-            text_snippet = result.get('text_snippet', '')
-            print(f"    {idx}. {doc_id} - {title}")
-            print(f"       Score: {score:.4f} | Source: {source}")
-            if text_snippet:
-                print(f"       Text: {text_snippet}")
-    
-    # Calculate metrics based on baseline type
+    # Storage comparison (same for all thresholds)
     if args.baseline_type == 'local':
-        # Compare local disk usage
         local_disk_saved_gb = baseline_local_gb - tiered_tier2_gb
         local_disk_saved_pct = (local_disk_saved_gb / baseline_local_gb * 100) if baseline_local_gb > 0 else 0
-        remote_storage_added_gb = tiered_tier3_gb  # Tiered system adds remote storage
+        remote_storage_added_gb = tiered_tier3_gb
     else:  # cloud
-        # Compare remote cloud storage usage
         remote_storage_saved_gb = baseline_remote_gb - tiered_tier3_gb
         remote_storage_saved_pct = (remote_storage_saved_gb / baseline_remote_gb * 100) if baseline_remote_gb > 0 else 0
-        local_disk_added_gb = tiered_tier2_gb  # Tiered system adds local disk
+        local_disk_added_gb = tiered_tier2_gb
     
-    # Performance retention: how much of baseline performance is retained
-    # Lower latency = better, so retention = baseline_latency / tiered_latency * 100
-    # > 100% means tiered is faster, < 100% means tiered is slower
-    performance_retention = (baseline_stats['mean'] / tiered_stats['mean'] * 100) if tiered_stats['mean'] > 0 else 0
+    # Store results for all thresholds
+    all_results = []
     
-    # Print results
+    # Run evaluation for each threshold
+    for threshold in thresholds:
+        print("\n" + "=" * 70)
+        print(f"EVALUATING WITH THRESHOLD: {threshold}")
+        print("=" * 70)
+        
+        # Run baseline queries
+        baseline_latencies = run_queries_baseline(
+            baseline_collection, query_embeddings_normalized,
+            k=args.k, threshold=threshold, num_queries=num_queries,
+            baseline_type=args.baseline_type
+        )
+        
+        baseline_stats = calculate_statistics(baseline_latencies)
+        baseline_log_name = f"query_log_baseline_{args.baseline_type}_th{threshold}.csv"
+        save_query_log(baseline_latencies, baseline_log_name, f"baseline-{args.baseline_type}-th{threshold}")
+        
+        baseline_name = "LOCAL DISK" if args.baseline_type == 'local' else "CLOUD STORAGE"
+        print(f"\nBaseline Performance ({baseline_name}, threshold={threshold}):")
+        print(f"  Mean latency: {baseline_stats['mean']:.2f} ms")
+        print(f"  Median latency: {baseline_stats['median']:.2f} ms")
+        print(f"  P95 latency: {baseline_stats['p95']:.2f} ms")
+        print(f"  P99 latency: {baseline_stats['p99']:.2f} ms")
+        
+        # Run tiered queries
+        tiered_latencies, tier_hits, query_results = run_queries_tiered(
+            tiered_manager, query_embeddings_normalized,
+            k=args.k, threshold=threshold, num_queries=num_queries,
+            query_texts=query_texts
+        )
+        
+        # Enrich query results with document metadata
+        for qr in query_results:
+            for result in qr['results']:
+                doc_id = result.get('id', '')
+                if doc_id in doc_metadata:
+                    result['title'] = doc_metadata[doc_id]['title']
+                    result['text_snippet'] = doc_metadata[doc_id]['text']
+        
+        tiered_stats = calculate_statistics(tiered_latencies)
+        save_query_log(tiered_latencies, f"query_log_tiered_th{threshold}.csv", f"tiered-th{threshold}")
+        
+        print(f"\nTiered Performance (threshold={threshold}):")
+        print(f"  Mean latency: {tiered_stats['mean']:.2f} ms")
+        print(f"  Median latency: {tiered_stats['median']:.2f} ms")
+        print(f"  P95 latency: {tiered_stats['p95']:.2f} ms")
+        print(f"  P99 latency: {tiered_stats['p99']:.2f} ms")
+        
+        # Calculate average results per query
+        avg_results = sum(len(qr['results']) for qr in query_results) / len(query_results) if query_results else 0
+        avg_similarity = 0
+        total_results = 0
+        for qr in query_results:
+            for result in qr['results']:
+                avg_similarity += result.get('score', 0)
+                total_results += 1
+        if total_results > 0:
+            avg_similarity /= total_results
+        
+        # Performance retention
+        performance_retention = (baseline_stats['mean'] / tiered_stats['mean'] * 100) if tiered_stats['mean'] > 0 else 0
+        
+        # Store results
+        total_hits = sum(tier_hits.values())
+        all_results.append({
+            'threshold': threshold,
+            'baseline_stats': baseline_stats,
+            'tiered_stats': tiered_stats,
+            'tier_hits': tier_hits,
+            'total_hits': total_hits,
+            'query_results': query_results,
+            'avg_results': avg_results,
+            'avg_similarity': avg_similarity,
+            'performance_retention': performance_retention
+        })
+        
+        # Print tier access statistics
+        print(f"\nTier Access Statistics (threshold={threshold}):")
+        if total_hits > 0:
+            print(f"  Tier 1 (RAM) hits:        {tier_hits['T1']} ({tier_hits['T1']/total_hits*100:.1f}%)")
+            print(f"  Tier 2 (Local disk) hits: {tier_hits['T2']} ({tier_hits['T2']/total_hits*100:.1f}%)")
+            print(f"  Tier 3 (Remote disk) hits: {tier_hits['T3']} ({tier_hits['T3']/total_hits*100:.1f}%)")
+            print(f"  Average results per query: {avg_results:.2f}")
+            print(f"  Average similarity score:  {avg_similarity:.4f}")
+        else:
+            print(f"  No tier hits recorded")
+    
+    # Print comprehensive comparison
     print("\n" + "=" * 70)
-    print("EVALUATION RESULTS")
+    print("COMPREHENSIVE EVALUATION RESULTS - THRESHOLD COMPARISON")
     print("=" * 70)
     
-    print(f"\nStorage Comparison:")
+    print(f"\nStorage Comparison (same for all thresholds):")
     if args.baseline_type == 'local':
         print(f"  Baseline (all Tier 2):        {baseline_local_gb:.4f} GB local disk")
         print(f"  Tiered (Tier 2 only):         {tiered_tier2_gb:.4f} GB local disk")
@@ -556,48 +579,69 @@ def main():
         print(f"  Tiered RAM overhead:          {tiered_ram_gb:.4f} GB ({t1_count} documents)")
         print(f"  Tiered local disk:            {tiered_tier2_gb:.4f} GB ({t2_count} documents)")
     
-    print(f"\nPerformance Comparison:")
-    print(f"  Baseline mean latency:      {baseline_stats['mean']:.2f} ms")
-    print(f"  Tiered mean latency:        {tiered_stats['mean']:.2f} ms")
-    print(f"  Performance retention:      {performance_retention:.1f}%")
-    if tiered_stats['mean'] < baseline_stats['mean']:
-        improvement = ((baseline_stats['mean'] - tiered_stats['mean']) / baseline_stats['mean'] * 100)
-        print(f"  Tiered is {improvement:.1f}% faster")
-    else:
-        degradation = ((tiered_stats['mean'] - baseline_stats['mean']) / baseline_stats['mean'] * 100)
-        print(f"  Tiered is {degradation:.1f}% slower")
-    
-    print(f"\nEfficiency Summary:")
-    if args.baseline_type == 'local':
-        print(f"  With {local_disk_saved_pct:.1f}% local disk reduction, tiered system")
-        if tiered_stats['mean'] < baseline_stats['mean']:
-            print(f"  achieves {100-performance_retention:.1f}% performance improvement")
+    print(f"\n" + "=" * 70)
+    print("PERFORMANCE COMPARISON BY THRESHOLD")
+    print("=" * 70)
+    print(f"{'Threshold':<12} {'Baseline Mean':<15} {'Tiered Mean':<15} {'Retention':<12} {'Avg Results':<12} {'Avg Similarity':<15} {'T1%':<8} {'T2%':<8} {'T3%':<8}")
+    print("-" * 110)
+    for result in all_results:
+        th = result['threshold']
+        bl_mean = result['baseline_stats']['mean']
+        tr_mean = result['tiered_stats']['mean']
+        ret = result['performance_retention']
+        avg_res = result['avg_results']
+        avg_sim = result['avg_similarity']
+        total_h = result['total_hits']
+        if total_h > 0:
+            t1_pct = result['tier_hits']['T1'] / total_h * 100
+            t2_pct = result['tier_hits']['T2'] / total_h * 100
+            t3_pct = result['tier_hits']['T3'] / total_h * 100
         else:
-            print(f"  maintains {performance_retention:.1f}% of baseline performance")
-        print(f"  while using {tiered_ram_gb:.4f} GB RAM for hot data")
-        print(f"  and {tiered_tier3_gb:.4f} GB remote storage for cold data")
-    else:  # cloud
-        print(f"  With {remote_storage_saved_pct:.1f}% cloud storage reduction, tiered system")
-        if tiered_stats['mean'] < baseline_stats['mean']:
-            print(f"  achieves {100-performance_retention:.1f}% performance improvement")
-        else:
-            print(f"  maintains {performance_retention:.1f}% of baseline performance")
-        print(f"  while using {tiered_ram_gb:.4f} GB RAM for hot data")
-        print(f"  and {tiered_tier2_gb:.4f} GB local disk for warm data")
+            t1_pct = t2_pct = t3_pct = 0
+        print(f"{th:<12.2f} {bl_mean:<15.2f} {tr_mean:<15.2f} {ret:<12.1f} {avg_res:<12.2f} {avg_sim:<15.4f} {t1_pct:<8.1f} {t2_pct:<8.1f} {t3_pct:<8.1f}")
     
-    # Add tier access to summary
-    total_hits = sum(tier_hits.values())
-    if total_hits > 0:
-        print(f"\nTier Access Distribution:")
-        print(f"  Tier 1 (RAM):        {tier_hits['T1']} hits ({tier_hits['T1']/total_hits*100:.1f}%)")
-        print(f"  Tier 2 (Local disk): {tier_hits['T2']} hits ({tier_hits['T2']/total_hits*100:.1f}%)")
-        print(f"  Tier 3 (Remote disk): {tier_hits['T3']} hits ({tier_hits['T3']/total_hits*100:.1f}%)")
+    # Detailed breakdown for each threshold
+    print(f"\n" + "=" * 70)
+    print("DETAILED BREAKDOWN BY THRESHOLD")
+    print("=" * 70)
+    for result in all_results:
+        th = result['threshold']
+        print(f"\nThreshold: {th}")
+        print(f"  Baseline: Mean={result['baseline_stats']['mean']:.2f}ms, P95={result['baseline_stats']['p95']:.2f}ms")
+        print(f"  Tiered:   Mean={result['tiered_stats']['mean']:.2f}ms, P95={result['tiered_stats']['p95']:.2f}ms")
+        print(f"  Performance retention: {result['performance_retention']:.1f}%")
+        print(f"  Average results per query: {result['avg_results']:.2f}")
+        print(f"  Average similarity score: {result['avg_similarity']:.4f}")
+        if result['total_hits'] > 0:
+            print(f"  Tier distribution: T1={result['tier_hits']['T1']/result['total_hits']*100:.1f}%, "
+                  f"T2={result['tier_hits']['T2']/result['total_hits']*100:.1f}%, "
+                  f"T3={result['tier_hits']['T3']/result['total_hits']*100:.1f}%")
     
-    # Save summary
+    # Show sample queries from first threshold
+    if all_results:
+        print(f"\n" + "=" * 70)
+        print("SAMPLE QUERIES AND RETRIEVED DOCUMENTS (First 5, Threshold={})".format(all_results[0]['threshold']))
+        print("=" * 70)
+        for qr in all_results[0]['query_results'][:5]:
+            print(f"\nQuery {qr['query_id']+1}: {qr['query_text']}")
+            print(f"  Latency: {qr['latency_ms']:.2f} ms")
+            print(f"  Retrieved {len(qr['results'])} documents:")
+            for idx, result in enumerate(qr['results'][:5], 1):
+                doc_id = result.get('id', 'N/A')
+                score = result.get('score', 0)
+                source = result.get('source', 'N/A')
+                title = result.get('title', 'N/A')
+                text_snippet = result.get('text_snippet', '')
+                print(f"    {idx}. {doc_id} - {title}")
+                print(f"       Score: {score:.4f} | Source: {source}")
+                if text_snippet:
+                    print(f"       Text: {text_snippet}")
+    
+    # Save comprehensive summary
     os.makedirs("data", exist_ok=True)
     summary_path = "data/evaluation_summary.txt"
     with open(summary_path, 'w') as f:
-        f.write("TIERED STORAGE EVALUATION SUMMARY\n")
+        f.write("TIERED STORAGE EVALUATION SUMMARY - MULTI-THRESHOLD ANALYSIS\n")
         f.write("=" * 70 + "\n\n")
         baseline_label = "All Tier 2 (Local Disk)" if args.baseline_type == 'local' else "All Tier 3 (Cloud Storage)"
         f.write(f"Baseline System ({baseline_label}):\n")
@@ -605,47 +649,30 @@ def main():
             f.write(f"  Local disk: {baseline_local_gb:.4f} GB\n")
         else:
             f.write(f"  Cloud storage: {baseline_remote_gb:.4f} GB\n")
-        f.write(f"  Mean latency: {baseline_stats['mean']:.2f} ms\n")
-        f.write(f"  P95 latency: {baseline_stats['p95']:.2f} ms\n\n")
-        f.write(f"Tiered System:\n")
+        f.write(f"\nTiered System:\n")
         f.write(f"  Tier 1 (RAM): {tiered_ram_gb:.4f} GB ({t1_count} docs)\n")
         f.write(f"  Tier 2 (Local disk): {tiered_tier2_gb:.4f} GB ({t2_count} docs)\n")
         f.write(f"  Tier 3 (Remote disk): {tiered_tier3_gb:.4f} GB ({t3_count} docs)\n")
-        f.write(f"  Mean latency: {tiered_stats['mean']:.2f} ms\n")
-        f.write(f"  P95 latency: {tiered_stats['p95']:.2f} ms\n\n")
-        f.write(f"Results:\n")
         if args.baseline_type == 'local':
             f.write(f"  Local disk saved: {local_disk_saved_pct:.2f}%\n")
         else:
             f.write(f"  Cloud storage saved: {remote_storage_saved_pct:.2f}%\n")
-        f.write(f"  Performance retention: {performance_retention:.1f}%\n")
-        f.write(f"  Baseline mean latency: {baseline_stats['mean']:.2f} ms\n")
-        f.write(f"  Tiered mean latency: {tiered_stats['mean']:.2f} ms\n\n")
-        
-        # Add tier access statistics
-        total_hits = sum(tier_hits.values())
-        if total_hits > 0:
-            f.write(f"Tier Access Statistics:\n")
-            f.write(f"  Tier 1 (RAM) hits: {tier_hits['T1']} ({tier_hits['T1']/total_hits*100:.1f}%)\n")
-            f.write(f"  Tier 2 (Local disk) hits: {tier_hits['T2']} ({tier_hits['T2']/total_hits*100:.1f}%)\n")
-            f.write(f"  Tier 3 (Remote disk) hits: {tier_hits['T3']} ({tier_hits['T3']/total_hits*100:.1f}%)\n\n")
-        
-        # Add sample queries
-        f.write(f"Sample Queries (First 5):\n")
-        for qr in query_results:
-            f.write(f"\n  Query {qr['query_id']+1}: {qr['query_text']}\n")
-            f.write(f"    Latency: {qr['latency_ms']:.2f} ms\n")
-            f.write(f"    Retrieved documents:\n")
-            for idx, result in enumerate(qr['results'][:5], 1):
-                doc_id = result.get('id', 'N/A')
-                score = result.get('score', 0)
-                source = result.get('source', 'N/A')
-                title = result.get('title', 'N/A')
-                text_snippet = result.get('text_snippet', '')
-                f.write(f"      {idx}. {doc_id} - {title}\n")
-                f.write(f"         Score: {score:.4f} | Source: {source}\n")
-                if text_snippet:
-                    f.write(f"         Text: {text_snippet}\n")
+        f.write(f"\n" + "=" * 70 + "\n")
+        f.write("PERFORMANCE BY THRESHOLD\n")
+        f.write("=" * 70 + "\n\n")
+        for result in all_results:
+            th = result['threshold']
+            f.write(f"Threshold: {th}\n")
+            f.write(f"  Baseline: Mean={result['baseline_stats']['mean']:.2f}ms, P95={result['baseline_stats']['p95']:.2f}ms\n")
+            f.write(f"  Tiered:   Mean={result['tiered_stats']['mean']:.2f}ms, P95={result['tiered_stats']['p95']:.2f}ms\n")
+            f.write(f"  Performance retention: {result['performance_retention']:.1f}%\n")
+            f.write(f"  Average results per query: {result['avg_results']:.2f}\n")
+            f.write(f"  Average similarity score: {result['avg_similarity']:.4f}\n")
+            if result['total_hits'] > 0:
+                f.write(f"  Tier distribution: T1={result['tier_hits']['T1']/result['total_hits']*100:.1f}%, "
+                       f"T2={result['tier_hits']['T2']/result['total_hits']*100:.1f}%, "
+                       f"T3={result['tier_hits']['T3']/result['total_hits']*100:.1f}%\n")
+            f.write("\n")
     
     print(f"\nSummary saved to {summary_path}")
     

@@ -37,7 +37,7 @@ def main():
     
     # Load queries from dataset
     print(f"Loading {NUM_QUERIES} queries from Natural Questions dataset...")
-    query_dataset = load_dataset("natural_questions", split="train", streaming=True)
+query_dataset = load_dataset("natural_questions", split="train", streaming=True)
     all_queries = [entry["question"]["text"] for entry in itertools.islice(query_dataset, NUM_QUERIES)]
     print(f"Loaded {len(all_queries)} queries")
     print()
@@ -79,8 +79,8 @@ def main():
             print(f"Processing batch {batch_num}/{total_batches} ({len(batch_queries)} queries)...", end=" ")
             
             try:
-                response = co.embed(
-                    model="multilingual-22-12",
+response = co.embed(
+    model="multilingual-22-12",
                     texts=batch_queries
                 )
                 batch_embeddings = np.array(response.embeddings)
@@ -117,8 +117,8 @@ def main():
             query_embeddings = new_embeddings
     
     # Save final embeddings
-    np.save("query_embeddings.npy", query_embeddings)
-    
+np.save("query_embeddings.npy", query_embeddings)
+
     print(f"\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
