@@ -1,6 +1,6 @@
 venv/
 python/wiki_embeddings.npy
-python/query_embeddings.npy
+python/query_embeddings_old.npy
 python/__pycache__
 python/tier2_chroma_db
 *.rdb

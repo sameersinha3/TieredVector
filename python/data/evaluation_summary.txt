@@ -1,20 +1,40 @@
-TIERED STORAGE EVALUATION SUMMARY
+TIERED STORAGE EVALUATION SUMMARY - MULTI-THRESHOLD ANALYSIS
 ======================================================================
 
-Baseline System (All Tier 2):
-  Local disk: 0.0343 GB
-  Mean latency: 1.81 ms
-  P95 latency: 2.02 ms
+Baseline System (All Tier 3 (Cloud Storage)):
+  Cloud storage: 0.0343 GB
 
 Tiered System:
   Tier 1 (RAM): 0.0015 GB (500 docs)
   Tier 2 (Local disk): 0.0069 GB (2000 docs)
   Tier 3 (Remote disk): 0.0257 GB (7500 docs)
-  Mean latency: 57.04 ms
-  P95 latency: 59.39 ms
+  Cloud storage saved: 25.00%
 
-Results:
-  Local disk saved: 80.00%
-  Performance retention: 3.2%
-  Baseline mean latency: 1.81 ms
-  Tiered mean latency: 57.04 ms
+======================================================================
+PERFORMANCE BY THRESHOLD
+======================================================================
+
+Threshold: 0.6
+  Baseline: Mean=53.96ms, P95=60.05ms
+  Tiered:   Mean=27.65ms, P95=39.84ms
+  Performance retention: 195.1%
+  Average results per query: 5.00
+  Average similarity score: 0.8462
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
+
+Threshold: 0.75
+  Baseline: Mean=53.28ms, P95=57.00ms
+  Tiered:   Mean=27.09ms, P95=32.03ms
+  Performance retention: 196.7%
+  Average results per query: 5.00
+  Average similarity score: 0.8462
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
+
+Threshold: 0.9
+  Baseline: Mean=52.89ms, P95=56.44ms
+  Tiered:   Mean=82.23ms, P95=85.53ms
+  Performance retention: 64.3%
+  Average results per query: 0.00
+  Average similarity score: 0.0000
+  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
+
