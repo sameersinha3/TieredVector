@@ -34,20 +34,13 @@ query_embeddings_normalized = np.divide(
 
 print("All vectors normalized.")
 
+S = doc_embeddings_normalized @ query_embeddings_normalized.T  
+S = np.maximum(S, 0.0)
+temperature = S.sum(axis=1)
 
-k = 100
-nbrs = NearestNeighbors(n_neighbors=k, metric='cosine').fit(doc_embeddings_normalized)
-print("Found Nearest Neighbors")
 
-temperature = np.zeros(len(doc_embeddings_normalized))
-
-# Use normalized queries to find neighbors
-distances, indices = nbrs.kneighbors(query_embeddings_normalized)
-for query_dists, query_topk in zip(distances, indices):
-
-    for rank, (sim, idx) in enumerate(zip(query_dists, query_topk)):
-        if sim > 0: # Only count positive similarity
-            temperature[idx] += sim # Add similarity score
+print("Temperature calculation complete.")
+print("Stats:", temperature.min(), temperature.max(), temperature.mean(), temperature.std())
 
 
 print("Assigned Temperatures")
