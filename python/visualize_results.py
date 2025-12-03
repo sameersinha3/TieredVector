@@ -376,7 +376,7 @@ def plot_comprehensive_dashboard(data, metrics, output_dir):
             color='#A23B72', alpha=0.8)
     ax1.set_xlabel('Similarity Threshold', fontweight='bold')
     ax1.set_ylabel('Mean Latency (ms)', fontweight='bold')
-    ax1.set_title('Key Finding: Tiered System is 2x Faster at Lower Thresholds', 
+    ax1.set_title('Mean Latency Comparison: Baseline vs Tiered System', 
                   fontweight='bold', fontsize=12)
     ax1.set_xticks(x)
     ax1.set_xticklabels([f'{th:.2f}' for th in thresholds])
@@ -444,25 +444,13 @@ def plot_comprehensive_dashboard(data, metrics, output_dir):
             label='Tier 3 (Remote Disk)', color='#2E86AB', alpha=0.8)
     ax6.set_xlabel('Similarity Threshold', fontweight='bold')
     ax6.set_ylabel('Access Percentage (%)', fontweight='bold')
-    ax6.set_title('Tier Access Distribution: All Queries Hit Tier 1 (RAM) for Lower Thresholds', 
+    ax6.set_title('Tier Access Distribution Across Thresholds', 
                   fontweight='bold', fontsize=12)
     ax6.set_xticks(x)
     ax6.set_xticklabels([f'{th:.2f}' for th in thresholds])
     ax6.legend(loc='upper right', ncol=3)
     ax6.set_ylim(0, 105)
     ax6.grid(True, alpha=0.3, axis='y')
-    
-    # Add key findings text box
-    findings_text = (
-        "Key Findings:\n"
-        "• Tiered system achieves 2x speedup (195-197% retention) at thresholds 0.6-0.75\n"
-        "• Lower thresholds (0.6, 0.75) return 5 results with high quality (0.846 similarity)\n"
-        "• Higher threshold (0.9) too restrictive: 0 results, slower performance\n"
-        "• All successful queries hit Tier 1 (RAM), demonstrating effective hot data placement\n"
-        "• 25% cloud storage savings with improved performance"
-    )
-    fig.text(0.02, 0.02, findings_text, fontsize=10, verticalalignment='bottom',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     plt.savefig(os.path.join(output_dir, 'comprehensive_dashboard.png'), dpi=300, bbox_inches='tight')
     print(f"Saved: {output_dir}/comprehensive_dashboard.png")
