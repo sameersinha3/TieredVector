@@ -17,12 +17,18 @@ python evaluate.py --queries 50 --k 5 --threshold 0.75 --baseline-type local
 # Cloud baseline: All documents in Tier 3/cloud storage
 python evaluate.py --queries 50 --k 5 --threshold 0.75 --baseline-type cloud
 
+# Multi-threshold evaluation with visualizations (recommended)
+python evaluate.py --queries 50 --k 5 --baseline-type cloud --multi-threshold --visualize
+
 # Step 3: Analyze results
 python analyze_results.py --log data/query_log_baseline.csv --system baseline
 python analyze_results.py --log data/query_log_tiered.csv --system tiered
 
 # Step 4: Compare systems
 python compare_results.py
+
+# Step 5: Generate visualizations (if not generated automatically)
+python visualize_results.py
 ```
 
 ## Evaluation Process
@@ -57,6 +63,8 @@ python evaluate.py [--queries N] [--k K] [--threshold T] [--baseline-type TYPE]
 - `--k`: Number of results per query (default: 5)
 - `--threshold`: Similarity threshold (default: 0.75)
 - `--baseline-type`: Baseline type - `local` (all in Tier 2/local disk) or `cloud` (all in Tier 3/cloud storage). Default: `local`
+- `--multi-threshold`: Run evaluation with multiple thresholds (0.6, 0.75, 0.9) to showcase threshold adjustments and accuracy-latency tradeoff
+- `--visualize`: Generate visualizations after evaluation (requires matplotlib)
 
 **What it does:**
 
@@ -89,6 +97,11 @@ python evaluate.py [--queries N] [--k K] [--threshold T] [--baseline-type TYPE]
 - `data/query_log_baseline_local.csv` or `data/query_log_baseline_cloud.csv` - Baseline system query metrics (depends on baseline type)
 - `data/query_log_tiered.csv` - Tiered system query metrics
 - `data/evaluation_summary.txt` - Summary of results
+- `data/visualizations/` - Visualization plots (if `--visualize` flag used):
+  - `latency_comparison.png` - Latency metrics across thresholds
+  - `accuracy_latency_tradeoff.png` - Accuracy-latency tradeoff analysis
+  - `tier_access_distribution.png` - Tier access patterns
+  - `comprehensive_dashboard.png` - Complete evaluation overview
 
 ### Step 3: Analyze Results
 
@@ -118,6 +131,29 @@ python compare_results.py
 - Storage breakdown (local disk, RAM, remote)
 - Performance comparison (latency metrics)
 - Efficiency summary
+
+### Step 5: Generate Visualizations
+
+```bash
+python visualize_results.py
+```
+
+**Or use the `--visualize` flag during evaluation:**
+```bash
+python evaluate.py --multi-threshold --visualize
+```
+
+**Output:** Comprehensive visualization plots saved to `data/visualizations/`:
+- **latency_comparison.png**: Latency metrics (mean, P95) comparison across thresholds
+- **accuracy_latency_tradeoff.png**: Shows how threshold affects result count, similarity, and latency
+- **tier_access_distribution.png**: Tier access patterns across different thresholds
+- **comprehensive_dashboard.png**: Complete overview with all key findings
+
+**Key Visualizations:**
+- Threshold impact on latency (baseline vs tiered)
+- Accuracy-latency tradeoff curves
+- Tier access distribution patterns
+- Performance retention across thresholds
 
 ## Metrics Explained
 
