@@ -15,26 +15,26 @@ PERFORMANCE BY THRESHOLD
 ======================================================================
 
 Threshold: 0.6
-  Baseline: Mean=53.96ms, P95=60.05ms
-  Tiered:   Mean=27.65ms, P95=39.84ms
-  Performance retention: 195.1%
+  Baseline: Mean=55.24ms, P95=60.37ms
+  Tiered:   Mean=23.20ms, P95=26.59ms
+  Performance retention: 238.1%
   Average results per query: 5.00
-  Average similarity score: 0.8462
+  Average similarity score: 0.8595
   Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
 
 Threshold: 0.75
-  Baseline: Mean=53.28ms, P95=57.00ms
-  Tiered:   Mean=27.09ms, P95=32.03ms
-  Performance retention: 196.7%
+  Baseline: Mean=53.68ms, P95=58.04ms
+  Tiered:   Mean=23.91ms, P95=30.52ms
+  Performance retention: 224.5%
   Average results per query: 5.00
-  Average similarity score: 0.8462
+  Average similarity score: 0.8595
   Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
 
 Threshold: 0.9
-  Baseline: Mean=52.89ms, P95=56.44ms
-  Tiered:   Mean=82.23ms, P95=85.53ms
-  Performance retention: 64.3%
-  Average results per query: 0.00
-  Average similarity score: 0.0000
-  Tier distribution: T1=100.0%, T2=0.0%, T3=0.0%
+  Baseline: Mean=55.18ms, P95=61.75ms
+  Tiered:   Mean=111.99ms, P95=93.78ms
+  Performance retention: 49.3%
+  Average results per query: 0.40
+  Average similarity score: 0.9027
+  Tier distribution: T1=25.0%, T2=56.2%, T3=18.8%
 

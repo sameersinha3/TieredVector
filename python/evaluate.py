@@ -348,6 +348,10 @@ def main():
                        help='Baseline type: "local" (all in Tier 2/local disk) or "cloud" (all in Tier 3/cloud storage)')
     parser.add_argument('--multi-threshold', action='store_true', 
                        help='Run evaluation with multiple thresholds (0.6, 0.75, 0.9)')
+    parser.add_argument('--visualize', action='store_true',
+                       help='Generate visualizations after evaluation (requires matplotlib)')
+    parser.add_argument('--eval-queries', action='store_true',
+                       help='Use separate evaluation query set (query_embeddings_eval.npy) instead of temperature simulation queries')
     args = parser.parse_args()
     
     # Determine thresholds to test
@@ -359,7 +363,20 @@ def main():
     # Load data first to check available queries
     print("Loading data...")
     doc_embeddings = np.load("wiki_embeddings.npy")
-    query_embeddings = np.load("query_embeddings.npy")
+    
+    # Choose which query set to use
+    if args.eval_queries:
+        eval_query_file = "query_embeddings_eval.npy"
+        if not os.path.exists(eval_query_file):
+            print(f"Error: Evaluation query file not found: {eval_query_file}")
+            print("Please run: python load_eval_queries.py first")
+            return
+        query_embeddings = np.load(eval_query_file)
+        print(f"Using evaluation query set: {len(query_embeddings)} queries")
+    else:
+        query_embeddings = np.load("query_embeddings.npy")
+        print(f"Using temperature simulation query set: {len(query_embeddings)} queries")
+    
     doc_ids = [f"doc{i}" for i in range(len(doc_embeddings))]
     
     # Load query texts if available
@@ -371,12 +388,21 @@ def main():
             query_texts = cache['queries'].tolist()
             print(f"Loaded {len(query_texts)} query texts from cache")
         else:
-            # Load from dataset
-            from datasets import load_dataset
-            import itertools
-            query_dataset = load_dataset("natural_questions", split="train", streaming=True)
-            query_texts = [entry["question"]["text"] for entry in itertools.islice(query_dataset, len(query_embeddings))]
-            print(f"Loaded {len(query_texts)} query texts from dataset")
+            # Try to load from evaluation queries JSON file
+            if args.eval_queries and os.path.exists("query_embeddings_eval_queries.json"):
+                import json
+                with open("query_embeddings_eval_queries.json", 'r') as f:
+                    query_texts = json.load(f)
+                print(f"Loaded {len(query_texts)} query texts from evaluation queries file")
+            else:
+                # Load from dataset
+                from datasets import load_dataset
+                import itertools
+                query_dataset = load_dataset("natural_questions", split="train", streaming=True)
+                # Use appropriate offset for evaluation queries
+                start_offset = 1000 if args.eval_queries else 0
+                query_texts = [entry["question"]["text"] for entry in itertools.islice(query_dataset, start_offset, start_offset + len(query_embeddings))]
+                print(f"Loaded {len(query_texts)} query texts from dataset")
     except Exception as e:
         print(f"Warning: Could not load query texts: {e}")
         query_texts = None
@@ -675,6 +701,20 @@ def main():
             f.write("\n")
     
     print(f"\nSummary saved to {summary_path}")
+    
+    # Generate visualizations if requested
+    if args.visualize:
+        print("\n" + "=" * 70)
+        print("GENERATING VISUALIZATIONS")
+        print("=" * 70)
+        try:
+            from visualize_results import main as generate_visualizations
+            generate_visualizations()
+        except ImportError:
+            print("Warning: matplotlib not available. Skipping visualization generation.")
+            print("Install with: pip install matplotlib")
+        except Exception as e:
+            print(f"Warning: Could not generate visualizations: {e}")
     
     # Cleanup
     if args.baseline_type == 'local':
