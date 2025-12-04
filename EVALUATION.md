@@ -1,6 +1,6 @@
 # Evaluation: Memory-Performance Tradeoff
 
-Evaluates the efficiency of the tiered storage system by comparing local disk usage and performance against a baseline (all data in Tier 2/local disk).
+Evaluates the efficiency of the tiered storage system by comparing storage usage and performance against baselines: either all data in Tier 2 (local disk) or all data in Tier 3 (cloud storage).
 
 ## Quick Start
 

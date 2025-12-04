@@ -55,10 +55,10 @@ if query_embedding is None:
     
     try:
         co = cohere.Client(cohere_api_key)
-        query_embedding = np.array(co.embed(
-            model="multilingual-22-12",
-            texts=[query]
-        ).embeddings[0])
+query_embedding = np.array(co.embed(
+    model="multilingual-22-12",
+    texts=[query]
+).embeddings[0])
         print("Generated embedding using Cohere API")
     except Exception as e:
         raise RuntimeError(f"Failed to generate embedding using Cohere API: {e}")
