@@ -291,7 +291,7 @@ def plot_tier_access_distribution(metrics, output_dir):
         print("Warning: No metrics available for tier access distribution")
         return
     
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     fig.suptitle('Tier Access Distribution Across Thresholds', fontsize=16, fontweight='bold')
     
     thresholds = sorted(metrics.keys())
@@ -317,7 +317,8 @@ def plot_tier_access_distribution(metrics, output_dir):
     ax1.set_title('Tier Access Distribution (Stacked)')
     ax1.set_xticks(x)
     ax1.set_xticklabels([f'{th:.2f}' for th in thresholds])
-    ax1.legend(loc='upper right')
+    # Move legend outside the plot area to avoid overlap
+    ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), frameon=True)
     ax1.set_ylim(0, 105)
     ax1.grid(True, alpha=0.3, axis='y')
     
@@ -344,7 +345,8 @@ def plot_tier_access_distribution(metrics, output_dir):
     ax2.set_xlabel('Similarity Threshold')
     ax2.set_ylabel('Access Percentage (%)')
     ax2.set_title('Tier Access Trends')
-    ax2.legend()
+    # Move legend outside the plot area to avoid overlap
+    ax2.legend(loc='upper left', bbox_to_anchor=(1.02, 1), frameon=True)
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(0, 105)
     

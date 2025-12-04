@@ -8,3 +8,4 @@ python/tier2_chroma_db
 python/tier_results.npz
 .env
 secret/
+presentation.txt
